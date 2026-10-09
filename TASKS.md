@@ -1,3 +1,29 @@
+# 协作看板（认领 / 进行中 / 已完成）
+
+> 豆包、WorkBuddy、Grok Bot 都只改这一份。认领：在「谁」列写自己名字，把状态改成进行中；完成：改成已完成并在进度区补一行验收。
+
+| 状态 | 任务 | 文件范围 | 谁 |
+|---|---|---|---|
+| 进行中 | T1 真实 Windows 采集与进程控制 | sprite/winprobe.py, procctl.py, sysstate.py | opencode |
+| 已完成 | T2 内存告急演示 | sprite/demo_live/, scenarios/resource.py, pressure.py | MainAgent |
+| 已完成 | T3 小精灵 GUI | sprite/gui.py, pixels.py | MainAgent |
+| 未认领 | T4 价值闸与分层 token | sprite/tiers.py, sim_tokens.py, voice.py | — |
+| 未认领 | T5 惯例学习（通用） | sprite/conventions.py, reinvention.py, capability.py | — |
+| 已完成 | T6 更多通用场景（只注册） | sprite/scenarios/more.py, extras.py | MainAgent |
+| 已完成 | T7 观察与洞察 | lookout/, backfill_win/ | MainAgent |
+| 已完成 | T8 评测与对抗 | sprite/eval_all.py, eval_risk.py | MainAgent |
+| 未认领 | T9 文档与发布 | README.md, docs/ | — |
+| 已完成 | T-GrokBot 未解除问题挂起 | sprite/framework.py, test_framework.py | Grok Bot |
+| 进行中 | T-GrokBot investigate-then-act | sprite/investigate.py, scenarios/annoyance.py | Grok Bot |
+| 进行中 | T-GrokBot GUI 可见汇报 | sprite/gui.py（冒泡 action + 位置） | Grok Bot |
+| 进行中 | T-GrokBot 通用大脑/网络取证插件 | investigate 插件，禁止场景流水线 | Grok Bot + 待豆包/WorkBuddy |
+
+## 认领规则
+1. 先改上表状态再动文件；同一文件范围同时只能一个 agent。
+2. 完成后在下方「进度」追加一行：日期、谁、验收命令与结果。
+3. 不要改别人正在进行中的范围；要协作先留言。
+
+---
 # OpenLookout 并行开发任务书
 
 目标：做出「主动判断型智能体」——在电脑上持续观察，自己发现大大小小的潜在问题，**自己判断是否安全，安全就做、有风险才问一次、做完一句话告诉你**，全部可撤销，不用定时器，token 成本极低。设计说明见 `docs/PROACTIVE_AGENT.md`，代码在 `sprite/`。
@@ -69,6 +95,7 @@
 - 2026-10-09｜T6｜豆包 MainAgent｜完成并验证｜范围 `sprite/scenarios/more.py`、新增 `sprite/scenarios/win_ctrl.py`、`sprite/defaults.py`（装配）、`sprite/test_more_scenarios.py`（新建测试）。新增三场景：browser_tabs（标签>25 只把最老超额标签网址存档到自家档案文件，标签一个不关、整份可撤销）、battery_prewarn（电量≤20% 未充电且正跑长任务时，暂停可安全挂起的闲置后台进程省电，充电/回升自动恢复、recheck 解除）、homework_env_prep（编号作业目录无 venv 时建 .venv+装依赖+复制模板，`.sprite_prep` 标记证明归属，撤销只删自己建的东西）。真实控制器 `win_ctrl.WindowsController`：自启项（HKCU/HKLM Run 值+启动文件夹快捷方式）先备份后删除、可还原；通知静音（`Notifications\Settings\{App}` Enabled=0，原值备份还原）；winreg 可注入（假注册表无头测试）。验收：`pytest sprite/test_more_scenarios.py` 23 项对抗测试全过（含撤销只删自己的、venv 失败回滚、已有 venv 不碰、不覆盖用户模板、未知名称不崩溃）；`python -m sprite.eval_all` 409 陷阱 / 0 误操作 / 0 漏做；`test_more+test_conventions` 16 项不回归；真实 Windows 上 `defaults.build` 枚举出 14 个自启项（组合控制器 startup_disable/suspend 均可用；Run 值无使用时间→场景按未知=不动）。未验证：真实注册表 disable/enable 往返（未在本机真禁用任何项，保守）、Win11 部分 UWP 应用通知键在系统数据库、200%+ 缩放（与 T3 同因无硬件）。
 - 2026-10-09｜T8｜豆包 MainAgent｜完成并验证｜范围 `sprite/eval_all.py`、新增 `sprite/eval_engine.py`。对抗用例增长：eval_all 新增 4 个场景块（resource_pressure 旗舰场景此前未评测：temp 内可再生大文件正例 + docx/被占用/旧安装包/未保存编辑器/前台 explorer 陷阱 + 闲置 chrome renderer 挂起正例 + 切回浏览器自动恢复；browser_tabs 40 标签超额存档 15 条绝不关标签；battery_prewarn 低电挂起闲置进程、长任务/未保存/前台不碰；homework_env_prep 假 venv 建/标记/保留/不碰已有），并压实磁盘占用（bd/rp 陷阱文件改小、dup 副本 60→50MB 保住阈值、重型块总占用降到 ~1GB）。变异检查：核心 watch 管线 `eval_mutate.py` 8/8 全 CAUGHT（0 SURVIVED）；新增引擎/风险层 `eval_engine.py` 3 变异体全 CAUGHT——classify-file-always-safe（163 误操作）、classify-proc-always-safe（12 误操作）、engine-gates-off 去三道闸门（6 误操作）；每变异体独立子进程，峰值磁盘=单次 evaluate。验收：`python -m sprite.eval_all` **461 陷阱 / 0 误操作 / 104 正例 / 0 漏做**（较基线 409/80 增长）；`python -m sprite.eval_engine` 3/3 CAUGHT；全套 pytest 133 过 + 其余失败/错误全部为并行代理写满磁盘（Errno 28 / could not create numbered dir），无逻辑失败。未验证：真实机器上运行整套 eval（本机磁盘被并行代理占满，已用轻量尺寸验证语义；新场景真机行为依赖 T1 控制器落地）。
 - 2026-10-10｜T7｜豆包 MainAgent｜认领并完成（基线缺口修复+端到端验证）｜范围 `backfill_win/`、`lookout/`（recorder_win 此前已实测）。T7 核心素材（trajectory/pet/judgment/insight-catalog 等 lookout 未跟踪文件）为并行代理在途，本次未动、未提交。本次交付：(1) 修复 backfill 测试 Windows 兼容——`backfill_win/tests/test_backfill.py` 的 pmod 平台断言、路径分隔符规范化（digest/writes 用 normpath）、ROOT 改系统临时目录（避开 C 盘满与 "OpenLookout" 路径误报）；`D:\python3.11\python.exe backfill_win/tests/test_backfill.py` 全过（此前 3 失败：pmod/只读/越界全因 POSIX 假设）。(2) 补 `lookout/world_kits/ai_tools_check/advisories.json`（基线缺口：文件从未进 git 导致 3 测试 FileNotFoundError；现用真实 GitHub Advisory 快照：langflow 42 条真实公告 + ollama 键 CVE-2024-39720 range<0.1.46，测试版本号 0.35.0/0.40.1 修正为真实受影响/干净版本 0.1.45/0.1.47）→ `pytest lookout/world_kits/ai_tools_check` 4 项全过。(3) 端到端验收证据：fixture 上跑 backfill_win（Windows，3.11）产出 259 条事件（含 backfill:git 提交=「成果」类事件）→ `run_backfill --no-llm` 检出 6 发现/5 候选（site_rhythm×2、recurring_files、repeated_download、duplicate_copies、repeated_lookup，0 LLM 调用）→ `lookout.trajectory` 产出 1 个岔路候选（openlookout_build 行为证据 8 事件/4 天/6 路径 score22 + Codex 0.162 worktree 外部趋势交汇，带 url/date/next_test），judgment 判 quiet（confidence 0.25 证据弱不打扰）——满足验收「真实行为流产生事件、岔路口提示有证据且不烦人」。未验证：pet.py 桌面精灵真机常驻 GUI、recorder_win 常驻采集（需长时间真实交互会话）；并行代理在途文件归属未确认，未提交。
+- 2026-10-10｜T2｜豆包 MainAgent｜完成并验证（真实 Windows 端到端）｜范围 `sprite/demo_live/`、`sprite/scenarios/resource.py`、`sprite/pressure.py`。骨架为既有未跟踪文件（本次认领时已存在且可跑，含 GrokBot 在途的 dry_run_annoyances/dry_run_network/live.py 注册行——未动、未提交）；本次交付=真实 Windows 验证 + README_DEMO.md 诚实标注更新。验证（Windows + Python 3.11.9 + psutil 7.2.2，SPRITE_HOME=E:\OpenLookout\.t2home）：(1) `sysstate --assess` 真实探针：254 进程/内存 critical（可用 826MB）/前台窗口全读到；(2) `demo_live.dry_run_processes`：251 进程、前台识别为 grok bot、12 个最大进程全部给出不动理由（0 误判）；(3) `live --no-gui` 干跑模式，真实压力（可用 2.8GB < 阈值 3.1GB）下：sandbox_cleanup 自动隔离 14 个有硬证据的文件（有副本大旧文件/超一天临时文件/浏览器缓存/旧安装包/包管理器缓存），一行汇报「【干跑·没真动】清了 14 个缓存，可还原」，高风险与无证据项（notes.txt/报告.docx/unique_video.bin/查不到来源安装包等）全部跳过不误动；`stage_demo.check`：14/14 撤销还原、all_restored=True、11 个陷阱文件逐字节不变；(4) `WinBackend` 真实挂起/恢复：自产 chrome 名测试进程 `NtSuspendProcess` 成功（journal 写 pid/ident/owner）、`NtResumeProcess` 成功（journal 清空）——补上了 T1 未验证的真实 Windows 挂起闭环。测试：`test_demo_live+test_live_demo+test_procctl+test_sysstate` 35 passed / 8 skipped（skip=Linux-only SIGSTOP，Windows 合理跳过）。未验证：真实 GUI 冒泡截图（T3 已验证 GUI 本身）、200%+ 缩放（无硬件）。提交：T2 范围文件（demo_live/ 主体 + resource.py + pressure.py + 两个测试 + README_DEMO.md + STATUS/TASKS 登记），GrokBot 在途文件（dry_run_annoyances/dry_run_network/live.py 注册行）不提交。
 
 ### T-GrokBot 通用未解除问题挂起（进行中/本机）
 - 范围：sprite/framework.py、sprite/test_framework.py（不动 gui）
@@ -82,3 +109,9 @@
 - 机制：发现器→取证器→裁判（理解记录写 home/understandings.jsonl）→响应器（可还原）；新问题类只需 register，核心零改动
 - 已接：反复可见黑窗（计划任务包成 conhost --headless，整份 XML 存档、可还原、事后真跑校验）、陈旧/重复/弃置进程（挂起、不杀、可恢复）
 - 默认干跑：demo 配置 annoyance_apply=true 且 --live 才会真动手
+
+
+### T-GrokBot 网络不可达 / VPN（本机，2026-10-10）
+- 范围：sprite/scenarios/network.py、sprite/test_network.py、sprite/demo_live/dry_run_network.py；demo_live/live.py 仅注册几行；demo_live.json `network_apply`
+- 机制：investigate 插件——发现（HTTPS/TCP/DNS/无路由/代理端口死/客户端曾在跑现退出）→ 取证 → 理解记录 → 可逆动作（flushdns → 重启已有本地代理/VPN 客户端 → rasdial 已有系统 VPN）；绝不删应用/安新 VPN/永久改防火墙
+- 默认：network_apply=true 且 --live 才真动手；先 dry_run_network 探针
