@@ -1,0 +1,2 @@
+本目录的 JSON schema 原样取自 CycloneDX 规范（经 cyclonedx-python-lib 11.12.0 打包），按 Apache License 2.0 发布。
+https://github.com/CycloneDX/specification

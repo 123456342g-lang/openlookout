@@ -1,0 +1,547 @@
+{
+ "rows": [
+  {
+   "repo": "fg193/sgcc",
+   "commit": "725b018a1982",
+   "files_scanned": 1,
+   "findings": 2,
+   "gm_findings": 2,
+   "gm_outside_cbomkit_coverage": 2,
+   "all_outside_cbomkit_coverage": 2,
+   "algs": {
+    "SM2": 1,
+    "SM3": 1
+   },
+   "usage": {
+    "call": 2
+   },
+   "gm_calls": 2,
+   "gm_calls_outside_cbomkit_coverage": 2,
+   "verdicts": {
+    "G2": 1,
+    "OK": 1
+   },
+   "libs": {
+    "gmssl(py-gmssl)": 2
+   },
+   "cbom_schema_errors": 0,
+   "seconds": 0.0
+  },
+  {
+   "repo": "szgenle/zhmm",
+   "commit": "2fcc67b4c399",
+   "files_scanned": 104,
+   "findings": 32,
+   "gm_findings": 10,
+   "gm_outside_cbomkit_coverage": 10,
+   "all_outside_cbomkit_coverage": 30,
+   "algs": {
+    "SM4": 7,
+    "Argon2": 6,
+    "bcrypt": 5,
+    "SM3": 3,
+    "SHA-2": 3,
+    "AES": 2,
+    "HMAC": 2,
+    "MD5": 2,
+    "PBKDF2": 1,
+    "SHA-1": 1
+   },
+   "usage": {
+    "call": 20,
+    "ref": 12
+   },
+   "gm_calls": 5,
+   "gm_calls_outside_cbomkit_coverage": 5,
+   "verdicts": {
+    "OK": 10,
+    "S": 19,
+    "L": 3
+   },
+   "libs": {
+    "gmssl(py-gmssl)": 10,
+    "hashlib": 7,
+    "argon2": 6,
+    "bcrypt": 5,
+    "pyca(Fernet)": 2,
+    "hmac": 2
+   },
+   "cbom_schema_errors": 0,
+   "seconds": 0.34
+  },
+  {
+   "repo": "rootklt/gmssl",
+   "commit": "ba24d5771d5e",
+   "files_scanned": 9,
+   "findings": 11,
+   "gm_findings": 11,
+   "gm_outside_cbomkit_coverage": 11,
+   "all_outside_cbomkit_coverage": 11,
+   "algs": {
+    "SM3": 6,
+    "SM2": 3,
+    "SM4": 2
+   },
+   "usage": {
+    "impl": 7,
+    "call": 4
+   },
+   "gm_calls": 4,
+   "gm_calls_outside_cbomkit_coverage": 4,
+   "verdicts": {
+    "G2": 3,
+    "OK": 8
+   },
+   "libs": {
+    "self-implemented": 7,
+    "gmssl(py-gmssl)": 4
+   },
+   "cbom_schema_errors": 0,
+   "seconds": 0.03
+  },
+  {
+   "repo": "C0de-breaker01/sm2-sm3-sm4-toolkit",
+   "commit": "d8e749977a43",
+   "files_scanned": 7,
+   "findings": 37,
+   "gm_findings": 36,
+   "gm_outside_cbomkit_coverage": 36,
+   "all_outside_cbomkit_coverage": 37,
+   "algs": {
+    "SM4": 24,
+    "SM2": 7,
+    "SM3": 5,
+    "HMAC": 1
+   },
+   "usage": {
+    "call": 25,
+    "ref": 12
+   },
+   "gm_calls": 24,
+   "gm_calls_outside_cbomkit_coverage": 24,
+   "verdicts": {
+    "OK": 29,
+    "G2": 7,
+    "S": 1
+   },
+   "libs": {
+    "gmssl(py-gmssl)": 36,
+    "hmac": 1
+   },
+   "cbom_schema_errors": 0,
+   "seconds": 0.11
+  },
+  {
+   "repo": "easyops-cn/ntls-go",
+   "commit": "658830d86656",
+   "files_scanned": 45,
+   "findings": 207,
+   "gm_findings": 48,
+   "gm_outside_cbomkit_coverage": 48,
+   "all_outside_cbomkit_coverage": 55,
+   "algs": {
+    "SM2": 41,
+    "ECDSA": 28,
+    "RSA": 25,
+    "EC": 25,
+    "SHA-1": 22,
+    "MD5": 17,
+    "SHA-2": 13,
+    "AES": 10,
+    "HMAC": 9,
+    "X25519": 6,
+    "SM3": 4,
+    "SM4": 3,
+    "3DES": 2,
+    "RC4": 1,
+    "ChaCha20": 1
+   },
+   "usage": {
+    "ref": 105,
+    "call": 102
+   },
+   "gm_calls": 24,
+   "gm_calls_outside_cbomkit_coverage": 24,
+   "verdicts": {
+    "D": 84,
+    "G2": 41,
+    "L": 42,
+    "S": 33,
+    "OK": 7
+   },
+   "libs": {
+    "emmansun/gmsm": 37,
+    "go:crypto/ecdsa": 28,
+    "go:crypto/rsa": 25,
+    "go:crypto/elliptic": 25,
+    "go:crypto/sha1": 22,
+    "go:crypto/md5": 17,
+    "go:crypto/sha256": 11,
+    "tjfoc/gmsm": 11,
+    "go:crypto/aes": 10,
+    "go:crypto/hmac": 9,
+    "go:golang.org/x/crypto/curve25519": 6,
+    "go:crypto/des": 2,
+    "go:crypto/sha512": 2,
+    "go:crypto/rc4": 1,
+    "go:golang.org/x/crypto/chacha20poly1305": 1
+   },
+   "cbom_schema_errors": 0,
+   "seconds": 0.07
+  },
+  {
+   "repo": "det101/gmkit",
+   "commit": "dbd39d6ca451",
+   "files_scanned": 21,
+   "findings": 21,
+   "gm_findings": 20,
+   "gm_outside_cbomkit_coverage": 20,
+   "all_outside_cbomkit_coverage": 21,
+   "algs": {
+    "SM2": 13,
+    "SM4": 6,
+    "Argon2": 1,
+    "SM3": 1
+   },
+   "usage": {
+    "call": 11,
+    "ref": 10
+   },
+   "gm_calls": 10,
+   "gm_calls_outside_cbomkit_coverage": 10,
+   "verdicts": {
+    "G2": 13,
+    "S": 1,
+    "OK": 7
+   },
+   "libs": {
+    "tjfoc/gmsm": 20,
+    "go:golang.org/x/crypto/argon2": 1
+   },
+   "cbom_schema_errors": 0,
+   "seconds": 0.01
+  },
+  {
+   "repo": "dazhengs/tools",
+   "commit": "e8bd47dfbcf4",
+   "files_scanned": 30,
+   "findings": 31,
+   "gm_findings": 8,
+   "gm_outside_cbomkit_coverage": 8,
+   "all_outside_cbomkit_coverage": 31,
+   "algs": {
+    "AES": 8,
+    "SHA-2": 5,
+    "SM2": 5,
+    "RSA": 5,
+    "PBKDF2": 2,
+    "SM4": 2,
+    "MD5": 1,
+    "SHA-1": 1,
+    "SHA-3": 1,
+    "SM3": 1
+   },
+   "usage": {
+    "call": 29,
+    "ref": 2
+   },
+   "gm_calls": 8,
+   "gm_calls_outside_cbomkit_coverage": 8,
+   "verdicts": {
+    "S": 16,
+    "L": 2,
+    "OK": 3,
+    "G2": 5,
+    "D": 5
+   },
+   "libs": {
+    "crypto-js": 14,
+    "sm-crypto": 8,
+    "jsencrypt": 5,
+    "WebCrypto": 4
+   },
+   "cbom_schema_errors": 0,
+   "seconds": 0.04
+  },
+  {
+   "repo": "langdadong/vue-cryptographic-app",
+   "commit": "9c32f510d195",
+   "files_scanned": 41,
+   "findings": 2,
+   "gm_findings": 0,
+   "gm_outside_cbomkit_coverage": 0,
+   "all_outside_cbomkit_coverage": 2,
+   "algs": {
+    "SHA-2": 2
+   },
+   "usage": {
+    "call": 2
+   },
+   "gm_calls": 0,
+   "gm_calls_outside_cbomkit_coverage": 0,
+   "verdicts": {
+    "S": 2
+   },
+   "libs": {
+    "WebCrypto": 2
+   },
+   "cbom_schema_errors": 0,
+   "seconds": 0.07
+  },
+  {
+   "repo": "wote-book/ai-privacy-exam-grading-system",
+   "commit": "87f74441aa70",
+   "files_scanned": 60,
+   "findings": 18,
+   "gm_findings": 15,
+   "gm_outside_cbomkit_coverage": 15,
+   "all_outside_cbomkit_coverage": 18,
+   "algs": {
+    "SM4": 15,
+    "bcrypt": 3
+   },
+   "usage": {
+    "call": 18
+   },
+   "gm_calls": 15,
+   "gm_calls_outside_cbomkit_coverage": 15,
+   "verdicts": {
+    "OK": 15,
+    "S": 3
+   },
+   "libs": {
+    "sm-crypto": 15,
+    "bcrypt": 3
+   },
+   "cbom_schema_errors": 0,
+   "seconds": 0.04
+  },
+  {
+   "repo": "wcnwyx/gm-encryption",
+   "commit": "9872421e7ad2",
+   "files_scanned": 12,
+   "findings": 14,
+   "gm_findings": 13,
+   "gm_outside_cbomkit_coverage": 0,
+   "all_outside_cbomkit_coverage": 0,
+   "algs": {
+    "SM2": 10,
+    "SM4": 2,
+    "EC": 1,
+    "SM3": 1
+   },
+   "usage": {
+    "ref": 6,
+    "call": 8
+   },
+   "gm_calls": 7,
+   "gm_calls_outside_cbomkit_coverage": 0,
+   "verdicts": {
+    "G2": 10,
+    "D": 1,
+    "OK": 3
+   },
+   "libs": {
+    "org.bouncycastle": 12,
+    "JCA:SecretKeySpec": 1,
+    "JCA:KeyGenerator": 1
+   },
+   "cbom_schema_errors": 0,
+   "seconds": 0.01
+  },
+  {
+   "repo": "ZZMarquis/gmhelper",
+   "commit": "3ccaf2215b57",
+   "files_scanned": 34,
+   "findings": 108,
+   "gm_findings": 44,
+   "gm_outside_cbomkit_coverage": 1,
+   "all_outside_cbomkit_coverage": 1,
+   "algs": {
+    "EC": 64,
+    "SM2": 38,
+    "SM3": 3,
+    "SM4": 3
+   },
+   "usage": {
+    "call": 16,
+    "ref": 91,
+    "impl": 1
+   },
+   "gm_calls": 10,
+   "gm_calls_outside_cbomkit_coverage": 0,
+   "verdicts": {
+    "D": 64,
+    "G2": 38,
+    "OK": 6
+   },
+   "libs": {
+    "org.bouncycastle": 106,
+    "JCA:KeyFactory": 1,
+    "self-implemented": 1
+   },
+   "cbom_schema_errors": 0,
+   "seconds": 0.07
+  },
+  {
+   "repo": "yirenyiqi/sm-crypto",
+   "commit": "64e344365ac1",
+   "files_scanned": 15,
+   "findings": 3,
+   "gm_findings": 3,
+   "gm_outside_cbomkit_coverage": 3,
+   "all_outside_cbomkit_coverage": 3,
+   "algs": {
+    "SM2": 1,
+    "SM3": 1,
+    "SM4": 1
+   },
+   "usage": {
+    "impl": 3
+   },
+   "gm_calls": 0,
+   "gm_calls_outside_cbomkit_coverage": 0,
+   "verdicts": {
+    "G2": 1,
+    "OK": 2
+   },
+   "libs": {
+    "self-implemented": 3
+   },
+   "cbom_schema_errors": 0,
+   "seconds": 0.01
+  },
+  {
+   "repo": "gotoworld/hsd-cipher-sm",
+   "commit": "b725f43c4224",
+   "files_scanned": 26,
+   "findings": 31,
+   "gm_findings": 27,
+   "gm_outside_cbomkit_coverage": 4,
+   "all_outside_cbomkit_coverage": 4,
+   "algs": {
+    "SM2": 16,
+    "SM3": 6,
+    "SM4": 5,
+    "SHA-2": 2,
+    "HMAC": 2
+   },
+   "usage": {
+    "call": 20,
+    "impl": 4,
+    "ref": 7
+   },
+   "gm_calls": 16,
+   "gm_calls_outside_cbomkit_coverage": 0,
+   "verdicts": {
+    "S": 4,
+    "OK": 11,
+    "G2": 16
+   },
+   "libs": {
+    "org.bouncycastle": 21,
+    "self-implemented": 4,
+    "JCA:MessageDigest": 2,
+    "JCA:Mac": 2,
+    "JCA:SecretKeySpec": 2
+   },
+   "cbom_schema_errors": 0,
+   "seconds": 0.05
+  },
+  {
+   "repo": "Hyperledger-TWGC/java-gm",
+   "commit": "b238e9f3c07f",
+   "files_scanned": 31,
+   "findings": 46,
+   "gm_findings": 41,
+   "gm_outside_cbomkit_coverage": 1,
+   "all_outside_cbomkit_coverage": 1,
+   "algs": {
+    "SM2": 25,
+    "SM3": 15,
+    "EC": 4,
+    "SM4": 1,
+    "SHA-2": 1
+   },
+   "usage": {
+    "ref": 38,
+    "call": 7,
+    "impl": 1
+   },
+   "gm_calls": 5,
+   "gm_calls_outside_cbomkit_coverage": 0,
+   "verdicts": {
+    "G2": 25,
+    "OK": 16,
+    "D": 4,
+    "S": 1
+   },
+   "libs": {
+    "org.bouncycastle": 43,
+    "JCA:Signature": 2,
+    "self-implemented": 1
+   },
+   "cbom_schema_errors": 0,
+   "seconds": 0.04
+  },
+  {
+   "repo": "pallets/itsdangerous",
+   "commit": "672971d66a2e",
+   "files_scanned": 18,
+   "findings": 13,
+   "gm_findings": 0,
+   "gm_outside_cbomkit_coverage": 0,
+   "all_outside_cbomkit_coverage": 13,
+   "algs": {
+    "SHA-2": 7,
+    "SHA-1": 3,
+    "HMAC": 2,
+    "MD5": 1
+   },
+   "usage": {
+    "call": 3,
+    "ref": 10
+   },
+   "gm_calls": 0,
+   "gm_calls_outside_cbomkit_coverage": 0,
+   "verdicts": {
+    "L": 4,
+    "S": 9
+   },
+   "libs": {
+    "hashlib": 11,
+    "hmac": 2
+   },
+   "cbom_schema_errors": 0,
+   "seconds": 0.03
+  },
+  {
+   "repo": "psf/requests",
+   "commit": "611c6162cbc4",
+   "files_scanned": 45,
+   "findings": 5,
+   "gm_findings": 0,
+   "gm_outside_cbomkit_coverage": 0,
+   "all_outside_cbomkit_coverage": 5,
+   "algs": {
+    "SHA-1": 2,
+    "SHA-2": 2,
+    "MD5": 1
+   },
+   "usage": {
+    "non-security": 5
+   },
+   "gm_calls": 0,
+   "gm_calls_outside_cbomkit_coverage": 0,
+   "verdicts": {
+    "L": 3,
+    "S": 2
+   },
+   "libs": {
+    "hashlib": 5
+   },
+   "cbom_schema_errors": 0,
+   "seconds": 0.24
+  }
+ ]
+}

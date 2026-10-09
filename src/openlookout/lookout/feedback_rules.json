@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "attendance_unimportant",
+      "action": "demote",
+      "factor": 0.05,
+      "match": {
+        "kind": "manual_summary",
+        "any_path_regex": [
+          "考勤",
+          "出勤",
+          "attendance"
+        ]
+      },
+      "reason": "用户明确表示考勤表不重要（2026-10-09）"
+    },
+    {
+      "id": "prefer_crypto_series",
+      "action": "boost",
+      "factor": 1.35,
+      "match": {
+        "kind": "numbered_series",
+        "any_path_regex": [
+          "密码",
+          "crypto",
+          "Cryptography"
+        ]
+      },
+      "reason": "用户明确表示应用密码学实验重要"
+    },
+    {
+      "id": "prefer_tool_churn",
+      "action": "boost",
+      "factor": 1.25,
+      "match": {
+        "kind": "tool_stack_churn"
+      },
+      "reason": "用户在 AI 编程工具上反复折腾，优先连外部新能力"
+    },
+    {
+      "id": "prefer_openlookout",
+      "action": "boost",
+      "factor": 1.2,
+      "match": {
+        "kind": "openlookout_build"
+      },
+      "reason": "用户正在做 OpenLookout 本身"
+    }
+  ]
+}

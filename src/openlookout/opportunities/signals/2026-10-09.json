@@ -1,0 +1,254 @@
+{
+ "fetched": "2026-10-09",
+ "note": "每条都由检索代理在 fetched 当天实际打开过 url 核对；数字照抄原文，不做推算（推算的会写明）。",
+ "signals": [
+  {
+   "id": "nist-ir8547",
+   "kind": "deadline",
+   "date": "2024-11-12",
+   "url": "https://csrc.nist.gov/pubs/ir/8547/ipd",
+   "fact": "NIST IR 8547（初稿）：112 位强度的 RSA/ECDSA 2030 年后弃用、2035 年后禁止；≥128 位强度的 2035 年后禁止。≥128 位安全的对称原语被认为满足 PQC 安全类别 1。",
+   "tags": [
+    "pqc",
+    "crypto-migration",
+    "public-key",
+    "standards"
+   ]
+  },
+  {
+   "id": "nist-fips203",
+   "kind": "trend",
+   "date": "2024-08-13",
+   "url": "https://www.nist.gov/news-events/news/2024/08/nist-releases-first-3-finalized-post-quantum-encryption-standards",
+   "fact": "NIST 发布 FIPS 203/204/205（ML-KEM、ML-DSA、SLH-DSA），并建议系统管理员立即开始迁移，因为完整集成需要时间。",
+   "tags": [
+    "pqc",
+    "crypto-migration",
+    "standards"
+   ]
+  },
+  {
+   "id": "eu-pqc-roadmap",
+   "kind": "deadline",
+   "date": "2025-06-23",
+   "url": "https://digital-strategy.ec.europa.eu/en/news/eu-reinforces-its-cybersecurity-post-quantum-cryptography",
+   "fact": "欧盟成员国路线图：2026 年底前所有成员国开始迁移，关键基础设施最迟 2030 年底完成。",
+   "tags": [
+    "pqc",
+    "crypto-migration",
+    "regulation"
+   ]
+  },
+  {
+   "id": "iccs-ngcc",
+   "kind": "trend",
+   "date": "2025-02-05",
+   "url": "https://www.niccs.org.cn/symmbzyjy/tzgg/pc/content/1937422988373135360/content_1937422988373135360.html",
+   "fact": "商用密码标准研究院为应对量子计算威胁，启动新一代商用密码算法（公钥、杂凑、分组）全球征集（NGCC）。",
+   "tags": [
+    "pqc",
+    "gm-crypto",
+    "china",
+    "standards"
+   ]
+  },
+  {
+   "id": "iccs-ngcc-pk-call",
+   "kind": "deadline",
+   "date": "2025-10-09",
+   "url": "https://www.niccs.org.cn/symmbzyjy/tzgg/pc/content/1976155884915003392/content_1976155884915003392.html",
+   "fact": "NGCC 公钥算法提案正式开始接收，提交截止为 2026-06-30；之后公布第一轮候选。",
+   "tags": [
+    "pqc",
+    "gm-crypto",
+    "china",
+    "standards"
+   ]
+  },
+  {
+   "id": "iccs-sm-20y",
+   "kind": "trend",
+   "date": "2025-10-09",
+   "url": "https://www.niccs.org.cn/symmbzyjy/tzgg/1976155884915003392/f4OlofsB.pdf",
+   "fact": "ICCS 意见反馈：SM 系列算法研制应用已逾 20 年，为抵抗量子计算风险，亟需研制新一代商用密码算法。",
+   "tags": [
+    "pqc",
+    "gm-crypto",
+    "china"
+   ]
+  },
+  {
+   "id": "cbomkit-coverage",
+   "kind": "gap",
+   "date": "2026-10-08",
+   "url": "https://github.com/cbomkit/sonar-cryptography",
+   "fact": "IBM/PQCA 的 sonar-cryptography（CBOMkit 扫描核心）README 覆盖表：Java JCA、BouncyCastle 轻量 API、Python pyca/cryptography、Go 标准库（及部分 x/crypto）；C# 开发中。检索代理在 commit 58eea48 的源码里 grep 不到 gmssl / gmsm / sm-crypto / Hutool 的检测规则（SM2/3/4 只经 BouncyCastle 和 pyca 识别）。",
+   "tags": [
+    "cbom",
+    "crypto-migration",
+    "gm-crypto",
+    "static-analysis",
+    "gap"
+   ]
+  },
+  {
+   "id": "quantumseal",
+   "kind": "existing",
+   "date": "2026-10-09",
+   "url": "https://github.com/mpaymenremora/QuantumSeal",
+   "fact": "QuantumSeal（GitHub 88 星，2026-09-04 推送）：开源后量子迁移工作台，可盘点源码和配置里的密码指标。它的 README（约 17.7 KB）里没有出现 SM2、SM3、SM4、gmssl 或 gmsm。",
+   "tags": [
+    "cbom",
+    "crypto-migration",
+    "pqc",
+    "gap"
+   ]
+  },
+  {
+   "id": "pypi-gmssl",
+   "kind": "adoption",
+   "date": "2026-10-09",
+   "url": "https://pypistats.org/api/packages/gmssl/recent",
+   "fact": "PyPI 包 gmssl（纯 Python SM2/SM3/SM4）近 30 天下载 116,743 次。",
+   "tags": [
+    "gm-crypto",
+    "china",
+    "python"
+   ]
+  },
+  {
+   "id": "npm-sm-crypto",
+   "kind": "adoption",
+   "date": "2026-10-09",
+   "url": "https://api.npmjs.org/downloads/point/last-month/sm-crypto",
+   "fact": "npm 包 sm-crypto 在 2026-09-08 至 2026-10-07 下载 123,049 次。",
+   "tags": [
+    "gm-crypto",
+    "china",
+    "javascript"
+   ]
+  },
+  {
+   "id": "cyclonedx-sm",
+   "kind": "trend",
+   "date": "2026-02-24",
+   "url": "https://raw.githubusercontent.com/CycloneDX/specification/master/schema/cryptography-defs.json",
+   "fact": "CycloneDX 的 cryptography-defs（lastUpdated 2026-02-24）已收录 SM2/SM3/SM4 的算法命名模式：标准侧已能表达国密资产。",
+   "tags": [
+    "cbom",
+    "gm-crypto",
+    "standards"
+   ]
+  },
+  {
+   "id": "longfellow-zk",
+   "kind": "trend",
+   "date": "2025-07-03",
+   "url": "https://blog.google/innovation-and-ai/technology/safety-security/opening-up-zero-knowledge-proof-technology-to-promote-privacy-in-age-assurance/",
+   "fact": "Google 开源零知识证明库 longfellow-zk，用于年龄验证；称将于 2026 年生效的 eIDAS 法规鼓励在 EUDI 钱包中集成 ZKP。",
+   "tags": [
+    "zk",
+    "finite-field",
+    "digital-identity",
+    "regulation"
+   ]
+  },
+  {
+   "id": "eu-av-spec",
+   "kind": "trend",
+   "date": "2026-10-09",
+   "url": "https://ageverification.dev/av-doc-technical-specification/docs/architecture-and-technical-specifications/",
+   "fact": "欧盟年龄验证技术规范：年龄验证 App 必须（SHALL）实现 ZKP 作为首选出示方式，依赖方必须实现 ZKP 验证；所采用的方案把证明写成算术电路（Frigo & shelat，基于 ECDSA 的匿名凭证）。",
+   "tags": [
+    "zk",
+    "finite-field",
+    "compiler",
+    "digital-identity",
+    "regulation"
+   ]
+  },
+  {
+   "id": "eu-av-faq",
+   "kind": "deadline",
+   "date": "2026-05-18",
+   "url": "https://digital-strategy.ec.europa.eu/en/faqs/eu-age-verification-solution",
+   "fact": "欧盟预计 2026 年底在全欧可用；7 个先行成员国（塞浦路斯、丹麦、法国、希腊、爱尔兰、意大利、西班牙）。",
+   "tags": [
+    "zk",
+    "digital-identity",
+    "regulation"
+   ]
+  },
+  {
+   "id": "zk-tooling-stars",
+   "kind": "adoption",
+   "date": "2026-10-09",
+   "url": "https://api.github.com/repos/iden3/circom",
+   "fact": "GitHub API 星标数：iden3/circom 1,697；noir-lang/noir 1,409；succinctlabs/sp1 1,741；risc0/risc0 2,201（同日查询）。",
+   "tags": [
+    "zk",
+    "compiler",
+    "open-source"
+   ]
+  },
+  {
+   "id": "steam-vram",
+   "kind": "trend",
+   "date": "2026-10-09",
+   "url": "https://store.steampowered.com/hwsurvey/",
+   "fact": "Steam 硬件调查 2026 年 9 月（Windows）：8 GB 显存占 35.78%，是占比最大的一档；12 GB 17.04%，16 GB 11.35%。≤8 GB 合计 66.62%（按页面各档相加，属推算）。",
+   "tags": [
+    "consumer-gpu",
+    "gamedev",
+    "local-llm"
+   ]
+  },
+  {
+   "id": "steam-genai",
+   "kind": "trend",
+   "date": "2025-07-13",
+   "url": "https://www.totallyhuman.io/blog/the-surprising-new-number-of-genai-games-on-steam",
+   "fact": "7,818 款 Steam 游戏披露使用生成式 AI（约占全库 7%），2025 年发售的游戏里接近 20%；运行时使用生成式 AI 的游戏在增加（如 inZOI 用小语言模型驱动角色）。",
+   "tags": [
+    "gamedev",
+    "local-llm",
+    "genai"
+   ]
+  },
+  {
+   "id": "llmunity",
+   "kind": "existing",
+   "date": "2026-10-09",
+   "url": "https://github.com/undreamai/LLMUnity",
+   "fact": "LLMUnity（在 Unity 里跑本地 LLM）GitHub 1,719 星，最近推送 2026-04-29。",
+   "tags": [
+    "gamedev",
+    "local-llm",
+    "open-source"
+   ]
+  },
+  {
+   "id": "slm-npc-paper",
+   "kind": "existing",
+   "date": "2026-10-09",
+   "url": "https://arxiv.org/html/2511.10277",
+   "fact": "arXiv 2511.10277：在消费级硬件上用固定人设小模型 + 模块化记忆做 NPC 对话。",
+   "tags": [
+    "gamedev",
+    "local-llm",
+    "consumer-gpu"
+   ]
+  },
+  {
+   "id": "ollama-stars",
+   "kind": "adoption",
+   "date": "2026-10-09",
+   "url": "https://api.github.com/repos/ollama/ollama",
+   "fact": "ollama/ollama GitHub 182,427 星；ggml-org/llama.cpp 130,568 星（同日查询）。",
+   "tags": [
+    "local-llm",
+    "open-source"
+   ]
+  }
+ ]
+}

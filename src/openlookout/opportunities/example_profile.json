@@ -1,0 +1,6 @@
+{"role": "计算机专业学生（示例画像，非真实用户）",
+ "topics": ["密码学课程：有限域与公钥密码", "编译原理课程", "独立游戏开发", "CTF 竞赛"],
+ "tools": ["Ollama 本地模型", "Codex"],
+ "hardware": ["8GB 显存显卡"],
+ "assets": ["开源项目（Python）"],
+ "exclude_topics": ["CTF"]}

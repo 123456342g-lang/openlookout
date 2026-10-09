@@ -1,0 +1,13 @@
+sim_home/
+capture/
+runs/
+__pycache__/
+*.pyc
+.env
+*.env
+real_data/rlkwic/
+real_data/rlkwic.zip
+real_data/awt/.git/
+capture_userbf/
+demo_private/
+runs/userbf*/

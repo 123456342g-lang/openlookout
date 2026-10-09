@@ -1,0 +1,56 @@
+{
+  "fetched": "2026-10-09",
+  "note": "每条含 url+date+fact；opens = 趋势新打开的能力（不是新闻摘要）。验证方式见 verified。",
+  "trends": [
+    {
+      "id": "openssh-10.6-pq-sig",
+      "date": "2026-10-06",
+      "url": "https://www.openssh.org/txt/release-10.6",
+      "fact": "OpenSSH 10.6 默认启用混合后量子签名 ssh-mldsa44-ed25519；sshd 新增默认开启的 WarnWeakCrypto，会记录非后量子安全的密钥协商。",
+      "opens": "把课堂里的公钥/签名实验直接接到生产 SSH 已默认启用的后量子签名与弱密码告警上。",
+      "tags": ["pqc", "crypto", "public-key", "ssh", "course-crypto"],
+      "verified": {"method": "webfetch", "at": "2026-10-09", "ok": true},
+      "kits": ["pubkey_lab"]
+    },
+    {
+      "id": "nist-fips203",
+      "date": "2024-08-13",
+      "url": "https://www.nist.gov/news-events/news/2024/08/nist-releases-first-3-finalized-post-quantum-encryption-standards",
+      "fact": "NIST 发布 FIPS 203/204/205（ML-KEM、ML-DSA、SLH-DSA），建议立即开始迁移。",
+      "opens": "实验报告可以对照 NIST 已定稿的 PQC 原语，而不是停在古典 RSA/DH。",
+      "tags": ["pqc", "crypto", "standards", "course-crypto"],
+      "verified": {"method": "catalog", "at": "2026-10-09", "ok": true},
+      "kits": ["pubkey_lab"]
+    },
+    {
+      "id": "iccs-ngcc-pk",
+      "date": "2025-10-09",
+      "url": "https://www.niccs.org.cn/symmbzyjy/tzgg/pc/content/1976155884915003392/content_1976155884915003392.html",
+      "fact": "信安标委 NGCC 新一代商用密码公钥算法提案接收中，截止 2026-06-30。",
+      "opens": "国内国密路线正在进入“抗量子第二跳”；课程实现可对照国密×PQC 双迁移。",
+      "tags": ["pqc", "gm-crypto", "china", "course-crypto"],
+      "verified": {"method": "catalog", "at": "2026-10-09", "ok": true},
+      "kits": ["pubkey_lab", "dmcbom"]
+    },
+    {
+      "id": "codex-0.162-worktrees",
+      "date": "2026-10-08",
+      "url": "https://github.com/openai/codex/releases/tag/rust-v0.162.0",
+      "fact": "Codex CLI 0.162.0 为受信任本地项目增加托管 Git worktree 的创建/列表工具；并发布签名的 Windows PowerShell 安装包。",
+      "opens": "换代理之前，可以先在隔离 worktree 里并行试改，而不必重装/重配整套工具链。",
+      "tags": ["ai-agent", "codex", "tool-churn", "dev-workflow"],
+      "verified": {"method": "websearch", "at": "2026-10-09", "ok": true},
+      "kits": ["worktree_starter"]
+    },
+    {
+      "id": "codex-0.161-sol",
+      "date": "2026-10-07",
+      "url": "https://github.com/openai/codex/releases/tag/rust-v0.161.0",
+      "fact": "Codex CLI 0.161.0 将 GPT-6.1 Sol 设为捆绑与 Bedrock 目录的默认模型。",
+      "opens": "同一 CLI 默认模型已换代；继续靠“再装一个代理”追新，不如固定一个入口并版本化项目约定。",
+      "tags": ["ai-agent", "codex", "tool-churn"],
+      "verified": {"method": "websearch", "at": "2026-10-09", "ok": true},
+      "kits": ["worktree_starter"]
+    }
+  ]
+}

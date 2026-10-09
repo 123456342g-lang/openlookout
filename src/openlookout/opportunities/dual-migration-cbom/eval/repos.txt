@@ -1,0 +1,17 @@
+# 真实公开仓库（GitHub 搜索 2026-10-09 选取：用国密库的应用/工具 + 2 个国际算法对照组）。格式：owner/name
+fg193/sgcc
+szgenle/zhmm
+rootklt/gmssl
+C0de-breaker01/sm2-sm3-sm4-toolkit
+easyops-cn/ntls-go
+det101/gmkit
+dazhengs/tools
+langdadong/vue-cryptographic-app
+wote-book/ai-privacy-exam-grading-system
+wcnwyx/gm-encryption
+ZZMarquis/gmhelper
+yirenyiqi/sm-crypto
+gotoworld/hsd-cipher-sm
+Hyperledger-TWGC/java-gm
+pallets/itsdangerous
+psf/requests

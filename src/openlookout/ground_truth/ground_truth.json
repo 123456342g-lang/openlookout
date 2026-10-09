@@ -1,0 +1,24 @@
+{
+ "_note": "埋进模拟数据里的问题。检测器、解读、方案生成代码永远不读本目录；只有 eval/evaluate.py 读。",
+ "persona": "林晓雨，西京大学化学学院研二，金纳米颗粒课题组，兼课题组助管。模拟时间 2026-08-31 ~ 2026-09-25 08:50（现在，周五早上）。",
+ "issues": [
+  {"id": "GT1", "name": "每周五手工用三张表拼周报（每次约 40-60 分钟）", "match": {"kinds": ["periodic_assembly"], "keywords": ["周报"]}},
+  {"id": "GT2", "name": "发票字段逐个从 PDF 复制粘贴到网上报销系统（每张 5 个字段）", "match": {"kinds": ["copy_paste_friction"], "keywords": ["报销", "dzfp", "发票"]}},
+  {"id": "GT3", "name": "百度网盘超级会员 9/12 被重复扣费两次（相隔 35 秒，两个订单号）", "match": {"kinds": ["duplicate_charge"], "keywords": ["百度网盘"]}},
+  {"id": "GT4", "name": "腾讯视频 VIP 自动续费从 25 元悄悄涨到 30 元", "match": {"kinds": ["price_change"], "keywords": ["腾讯视频"]}},
+  {"id": "GT5", "name": "9/7 组会纪要里埋了一条：9 月 28 日前把 XRD 送样表交到测试中心（之后排到 11 月），她之后没有任何相关动作；今天 9/25，只剩 3 天", "match": {"kinds": ["deadline"], "keywords": ["XRD", "送样", "测试中心"]}},
+  {"id": "GT6", "name": "反复百度同几种试剂的摩尔质量（每个实验日都查，答案就在她自己的表里）", "match": {"kinds": ["repeated_lookup"], "keywords": ["摩尔质量", "分子量"]}},
+  {"id": "GT7", "name": "9/18 手工周报的耗材支出合计少算了 200 元（漏抄 9/16 李婷领的 2 盒移液枪头）", "match": {"kinds": ["report_mismatch"], "keywords": ["耗材"]}},
+  {"id": "GT8", "name": "对照样（CTRL）吸光度从 9/14 起持续漂高约 7%（0.500 → 0.536），仪器/试剂可能出问题，之后所有样品数据都受影响", "match": {"kinds": ["numeric_drift"], "keywords": ["对照", "CTRL", "吸光度"]}},
+  {"id": "GT9", "name": "还有 2 张发票（9/21、9/23 下载）还没报销", "match": {"kinds": ["copy_paste_friction", "pending_items"], "keywords": ["未报", "还没报", "待报", "pending"]}}
+ ],
+ "distractors": [
+  {"id": "D1", "name": "9/9 前选课（纪要里，已完成：9/8 访问选课系统并保存了选课结果）", "bad_if": {"kinds": ["deadline"], "keywords": ["选课"]}},
+  {"id": "D2", "name": "把 8 月吸光度数据发给张浩（纪要里的承诺，9/16 已发邮件）", "bad_if": {"kinds": ["deadline"], "keywords": ["张浩", "8 月份的吸光度", "原始数据"]}},
+  {"id": "D3", "name": "食堂/外卖/瑞幸每天同金额消费是正常的，不是重复扣费", "bad_if": {"kinds": ["duplicate_charge", "price_change"], "keywords": ["食堂", "美团", "瑞幸"]}},
+  {"id": "D4", "name": "QQ音乐每月 15 元正常续费，不该报警", "bad_if": {"kinds": ["duplicate_charge", "price_change"], "keywords": ["QQ音乐"]}},
+  {"id": "D5", "name": "每天刷 B站/知乎/淘宝 是娱乐，不该被当成'重复查询'去'优化'", "bad_if": {"kinds": ["repeated_lookup"], "keywords": ["bilibili", "zhihu", "taobao", "哔哩", "知乎", "淘宝"]}},
+  {"id": "D6", "name": "每天看邮箱是正常习惯", "bad_if": {"kinds": ["repeated_lookup"], "keywords": ["邮箱", "mail"]}}
+ ],
+ "neutral_ok": ["中期报告 10/30 初稿（远期截止，可以放抽屉，不应进今日卡片）", "周四把群消息贴进进度表（真实摩擦，但微信封闭，可作为观察）", "每天看研究生院通知页"]
+}
