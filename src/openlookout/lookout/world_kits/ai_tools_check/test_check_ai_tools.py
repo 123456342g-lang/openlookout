@@ -34,12 +34,12 @@ class T(unittest.TestCase):
         for s in servers: s.shutdown()
         return rc, json.loads(f.getvalue())
     def test_old_versions_flagged(self):
-        rc, rep = self.run_case("1.9.0", "0.35.0")
+        rc, rep = self.run_case("1.9.0", "0.1.45")
         self.assertEqual(rc, 1)
         self.assertEqual(rep[0]["verdict"], "需要升级"); self.assertTrue(len(rep[0]["advisories"]) >= 5)
         self.assertIn("受影响范围", rep[1]["verdict"])
     def test_current_versions_clean(self):
-        rc, rep = self.run_case("1.12.5", "0.40.1")
+        rc, rep = self.run_case("1.12.5", "0.1.47")
         self.assertEqual(rep[0]["advisories"], []); self.assertIn("不低于", rep[1]["verdict"])
     def test_min_fixed(self):
         rc, rep = self.run_case("1.10.2", None)

@@ -1,11 +1,12 @@
 """端到端测试：造假目录 → 在审计钩子下跑 backfill_win.main() → 检查输出、隐私和只读。
 python3 tests/test_backfill.py"""
-import json, ntpath, os, sys, hashlib
+import json, ntpath, os, sys, hashlib, tempfile
 from datetime import datetime
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, os.path.dirname(HERE)); sys.path.insert(0, HERE)
 import backfill_win as bw, make_fixture
 
-ROOT = "/tmp/bf_fx"; H = f"{ROOT}/C/Users/xiaoming"; OUT = f"{ROOT}/E/OpenLookout/data/backfill"
+ROOT = tempfile.mkdtemp(prefix="bf_fx_")   # 系统临时目录：Windows/Linux 通用；目录名不含 "OpenLookout"，避免路径断言误报
+H = f"{ROOT}/C/Users/xiaoming"; OUT = f"{ROOT}/E/OpenLookout/data/backfill"
 fails = []
 def check(cond, msg):
     print(("  ok  " if cond else "  FAIL ") + msg)
@@ -19,7 +20,9 @@ check(m("c:\\users\\XIAOMING\\Downloads\\b.pdf") == "xiaoming/Downloads/b.pdf", 
 check(m("E:\\项目\\数据\\x.csv") == "E:/项目/数据/x.csv", "ntpath: 其它盘 -> E:/...")
 check(m("C:\\Users\\xiaomingX\\a.txt") == "C:/Users/xiaomingX/a.txt", "ntpath: 前缀相同但不是主目录")
 check(m("\\\\NAS\\share\\a.docx") == "//NAS/share/a.docx", "ntpath: UNC 路径")
-check(bw.pmod("C:\\a") is ntpath and bw.pmod("/tmp/a") is not ntpath, "pmod 选对模块")
+win_ok = bw.pmod("C:\\a") is ntpath
+posix_ok = (not bw.IS_WIN and bw.pmod("/tmp/a") is not ntpath) or (bw.IS_WIN and bw.pmod("/tmp/a") is ntpath)
+check(win_ok and posix_ok, "pmod 选对模块")
 check(bw.file_url_to_path("file:///C:/Users/x/%E8%AE%BA%E6%96%87.pdf") == "C:\\Users\\x\\论文.pdf", "file:// -> Windows 路径")
 check(bw.webkit_dt(13372473600000000).isoformat() == "2024-10-04T00:00:00+00:00", "WebKit 时间换算")
 check(bw.filetime_dt(133724736000000000).isoformat() == "2024-10-04T00:00:00+00:00", "FILETIME 换算")
@@ -39,8 +42,9 @@ print("[e2e]")
 make_fixture.main(ROOT)
 def digest(root):
     out = {}
+    out_norm = os.path.normpath(OUT)
     for dp, dn, fn in os.walk(root):
-        if dp.startswith(OUT): continue
+        if os.path.normpath(dp).startswith(out_norm): continue
         for f in fn:
             p = os.path.join(dp, f); st = os.stat(p)
             out[p] = (st.st_mtime, st.st_size, hashlib.md5(open(p, "rb").read()).hexdigest())
@@ -60,7 +64,7 @@ after = digest(ROOT)
 check(before == after, f"用户目录里 {len(before)} 个文件一个字节都没变（只读）")
 bad = [p for p, _ in opened_by_backfill if os.path.basename(p).lower() in ("login data", "cookies", "web data", "logins.json", "key4.db")]
 check(not bad, "没碰 Cookies / Login Data / Web Data / logins.json")
-writes = [p for p, mode in opened_by_backfill if any(c in mode for c in "wax+") and not p.startswith(OUT)]
+writes = [p for p, mode in opened_by_backfill if any(c in mode for c in "wax+") and not os.path.normpath(p).startswith(os.path.normpath(OUT))]
 check(not writes, f"所有写入都在输出目录里（越界写入：{writes[:3]}）")
 check(not net, "没有任何网络调用")
 check(not os.path.exists(os.path.join(OUT, "_tmp")), "临时数据库副本已删除")

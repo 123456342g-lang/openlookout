@@ -1,0 +1,598 @@
+{
+ "langflow": [
+  {
+   "ghsa": "GHSA-w794-rj3p-xv45",
+   "cve": "CVE-2026-105697",
+   "published": "2026-10-07",
+   "severity": "critical",
+   "summary": "Langflow: OS command injection (RCE) via arbitrary command in MCP stdio server configuration",
+   "url": "https://github.com/advisories/GHSA-w794-rj3p-xv45",
+   "ranges": [
+    [
+     ">= 1.1.2, < 1.10.3",
+     "1.10.3"
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-gh98-4phw-6fmw",
+   "cve": "CVE-2026-105698",
+   "published": "2026-10-07",
+   "severity": "medium",
+   "summary": "Langflow : Cross-user flow access and vertex execution via deprecated /api/v1/build/{flow_id}/vertices endpoints",
+   "url": "https://github.com/advisories/GHSA-gh98-4phw-6fmw",
+   "ranges": [
+    [
+     ">= 1.0.0, < 1.10.1",
+     "1.10.1"
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-4hmc-cfm3-w43c",
+   "cve": "CVE-2026-105699",
+   "published": "2026-10-07",
+   "severity": "high",
+   "summary": "Langflow has Authenticated Cross-Project File Disclosure via Unscoped MCP Resource Handlers",
+   "url": "https://github.com/advisories/GHSA-4hmc-cfm3-w43c",
+   "ranges": [
+    [
+     ">= 1.6.8, <= 1.9.0",
+     "1.9.1"
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-4f6c-2vvp-gw82",
+   "cve": "CVE-2026-105741",
+   "published": "2026-10-07",
+   "severity": "high",
+   "summary": "Langflow: IP Spoofing Bypass via `X-Forwarded-For` Allowing Remote Configuration Write",
+   "url": "https://github.com/advisories/GHSA-4f6c-2vvp-gw82",
+   "ranges": [
+    [
+     ">= 1.5.0, < 1.10.3",
+     "1.10.3"
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-j8f7-x8jm-wmm4",
+   "cve": null,
+   "published": "2026-10-06",
+   "severity": "medium",
+   "summary": "Langflow: SSRF in URL-taking components (protection disabled by default / warn-only, not applied to RSS, SearXNG, Web Search, Home Assistant, Glean, Docling)",
+   "url": "https://github.com/advisories/GHSA-j8f7-x8jm-wmm4",
+   "ranges": [
+    [
+     "< 1.10.3",
+     "1.10.3"
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-8qpj-27x8-pwpq",
+   "cve": "CVE-2026-10561",
+   "published": "2026-10-06",
+   "severity": "critical",
+   "summary": "Langflow: PythonREPLComponent executes unsandboxed Python code, enabling authenticated RCE and privilege escalation",
+   "url": "https://github.com/advisories/GHSA-8qpj-27x8-pwpq",
+   "ranges": [
+    [
+     "< 1.10.1",
+     "1.10.1"
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-jxw3-mjmx-3pqm",
+   "cve": "CVE-2026-9205",
+   "published": "2026-10-05",
+   "severity": "critical",
+   "summary": "Langflow: Weak Fernet Key via random.seed()",
+   "url": "https://github.com/advisories/GHSA-jxw3-mjmx-3pqm",
+   "ranges": [
+    [
+     "<= 1.10.0",
+     "1.10.1"
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-cf6m-vc3m-7cgm",
+   "cve": "CVE-2026-8505",
+   "published": "2026-10-05",
+   "severity": "critical",
+   "summary": "Langflow: Unauthenticated Flow Execution via Webhook Authentication Bypass",
+   "url": "https://github.com/advisories/GHSA-cf6m-vc3m-7cgm",
+   "ranges": [
+    [
+     ">= 1.7.0, <= 1.9.0",
+     "1.9.1"
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-w584-2h2r-2hvf",
+   "cve": "CVE-2026-51886",
+   "published": "2026-10-05",
+   "severity": "high",
+   "summary": "Langflow: Title Authenticated Remote Code Execution in  validate_code  via Malicious Decorators  Description",
+   "url": "https://github.com/advisories/GHSA-w584-2h2r-2hvf",
+   "ranges": [
+    [
+     ">= 1.7.2, < 1.10.1",
+     "1.10.1"
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-9fpm-3445-2vx4",
+   "cve": "CVE-2026-7700",
+   "published": "2026-10-05",
+   "severity": "high",
+   "summary": "Langflow: Prompt injection in Langflow Smart Transform can lead to code execution",
+   "url": "https://github.com/advisories/GHSA-9fpm-3445-2vx4",
+   "ranges": [
+    [
+     ">= 1.3.0, < 1.10.3",
+     "1.10.3"
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-ccv6-r384-xp75",
+   "cve": "CVE-2026-55447",
+   "published": "2026-06-19",
+   "severity": "critical",
+   "summary": "Langflow: BaseFileComponent-based nodes arbitrary file read with RCE exploit",
+   "url": "https://github.com/advisories/GHSA-ccv6-r384-xp75",
+   "ranges": [
+    [
+     "< 1.9.2",
+     "1.9.2"
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-qwqc-p3q8-wcg9",
+   "cve": "CVE-2026-55446",
+   "published": "2026-06-19",
+   "severity": "high",
+   "summary": "Langflow: Unauthenticated DoS through multipart form boundary file upload",
+   "url": "https://github.com/advisories/GHSA-qwqc-p3q8-wcg9",
+   "ranges": [
+    [
+     "< 1.0.19",
+     "1.0.19"
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-7hw8-6q6r-4276",
+   "cve": "CVE-2026-55423",
+   "published": "2026-06-19",
+   "severity": "medium",
+   "summary": "Langflow: Logout button does not clear session",
+   "url": "https://github.com/advisories/GHSA-7hw8-6q6r-4276",
+   "ranges": [
+    [
+     "< 1.7.0",
+     "1.7.0"
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-qrpv-q767-xqq2",
+   "cve": "CVE-2026-55255",
+   "published": "2026-06-19",
+   "severity": "high",
+   "summary": "Langflow: IDOR Vulnerability in `/api/v1/responses` Endpoint Allows Authenticated Attackers to Access Another User's Flow",
+   "url": "https://github.com/advisories/GHSA-qrpv-q767-xqq2",
+   "ranges": [
+    [
+     "< 1.9.1",
+     "1.9.1"
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-x223-p2gf-v735",
+   "cve": "CVE-2026-55450",
+   "published": "2026-06-17",
+   "severity": "critical",
+   "summary": "Langflow: Unauthenticated file upload leads to DoS (space exhaustion) and information leak",
+   "url": "https://github.com/advisories/GHSA-x223-p2gf-v735",
+   "ranges": [
+    [
+     "< 1.9.1",
+     "1.9.1"
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-rcjh-r59h-gq37",
+   "cve": "CVE-2026-48520",
+   "published": "2026-06-16",
+   "severity": "medium",
+   "summary": "Langflow: Unauthenticated Shareable Playground arbitrary local or S3 file read",
+   "url": "https://github.com/advisories/GHSA-rcjh-r59h-gq37",
+   "ranges": [
+    [
+     "< 1.10.0",
+     "1.10.0"
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-v5ff-9q35-q26f",
+   "cve": "CVE-2026-48519",
+   "published": "2026-06-16",
+   "severity": "critical",
+   "summary": "Langflow: Unauthenticated RCE in Shareable Playgrounds",
+   "url": "https://github.com/advisories/GHSA-v5ff-9q35-q26f",
+   "ranges": [
+    [
+     "<= 1.9.1",
+     "1.9.2"
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-79ph-745m-6wxq",
+   "cve": "CVE-2026-42867",
+   "published": "2026-06-16",
+   "severity": "medium",
+   "summary": "Langflow: Path Traversal in Knowledge Bases API via Creation Endpoint",
+   "url": "https://github.com/advisories/GHSA-79ph-745m-6wxq",
+   "ranges": [
+    [
+     "<= 1.8.4",
+     "1.9.0"
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-9c59-2mvc-vfr8",
+   "cve": "CVE-2026-33760",
+   "published": "2026-06-16",
+   "severity": "high",
+   "summary": "Langflow: IDOR/BOLA in Monitor API — Missing Ownership Enforcement on 7 Endpoints ",
+   "url": "https://github.com/advisories/GHSA-9c59-2mvc-vfr8",
+   "ranges": [
+    [
+     "< 1.9.0",
+     "1.9.0"
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-9whx-c884-c68q",
+   "cve": "CVE-2026-42048",
+   "published": "2026-05-05",
+   "severity": "critical",
+   "summary": "Langflow Knowledge Bases API is Vulnerable to Path Traversal",
+   "url": "https://github.com/advisories/GHSA-9whx-c884-c68q",
+   "ranges": [
+    [
+     "<= 1.8.4",
+     "1.9.0"
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-9jpj-cph8-w449",
+   "cve": "CVE-2026-6598",
+   "published": "2026-04-20",
+   "severity": "low",
+   "summary": "Langflow: Cleartext Storage of Authentication Settings in Project Creation Endpoint",
+   "url": "https://github.com/advisories/GHSA-9jpj-cph8-w449",
+   "ranges": [
+    [
+     "< 1.9.1",
+     "1.9.1"
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-v66p-f7x3-4794",
+   "cve": "CVE-2026-6599",
+   "published": "2026-04-20",
+   "severity": "low",
+   "summary": "Langflow vulnerable to injection",
+   "url": "https://github.com/advisories/GHSA-v66p-f7x3-4794",
+   "ranges": [
+    [
+     "<= 1.8.3",
+     null
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-5jjf-wcvf-923w",
+   "cve": "CVE-2026-6597",
+   "published": "2026-04-20",
+   "severity": "low",
+   "summary": "Langflow has an Information Leak through Incomplete API Key Redaction",
+   "url": "https://github.com/advisories/GHSA-5jjf-wcvf-923w",
+   "ranges": [
+    [
+     "<= 1.8.3",
+     null
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-8c4j-f57c-35cf",
+   "cve": "CVE-2026-34046",
+   "published": "2026-03-27",
+   "severity": "high",
+   "summary": "Langflow: Authenticated Users Can Read, Modify, and Delete Any Flow via Missing Ownership Check",
+   "url": "https://github.com/advisories/GHSA-8c4j-f57c-35cf",
+   "ranges": [
+    [
+     "<= 1.5.0",
+     "1.5.1"
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-v8hw-mh8c-jxfc",
+   "cve": "CVE-2026-33873",
+   "published": "2026-03-26",
+   "severity": "critical",
+   "summary": "Langflow has Authenticated Code Execution in Agentic Assistant Validation",
+   "url": "https://github.com/advisories/GHSA-v8hw-mh8c-jxfc",
+   "ranges": [
+    [
+     "<= 1.8.1",
+     "1.9.0"
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-ph9w-r52h-28p7",
+   "cve": "CVE-2026-33497",
+   "published": "2026-03-20",
+   "severity": "high",
+   "summary": "langflow: /profile_pictures/{folder_name}/{file_name} endpoint file reading",
+   "url": "https://github.com/advisories/GHSA-ph9w-r52h-28p7",
+   "ranges": [
+    [
+     "< 1.7.1",
+     "1.7.1"
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-7grx-3xcx-2xv5",
+   "cve": "CVE-2026-33484",
+   "published": "2026-03-20",
+   "severity": "high",
+   "summary": "langflow has Unauthenticated IDOR on Image Downloads",
+   "url": "https://github.com/advisories/GHSA-7grx-3xcx-2xv5",
+   "ranges": [
+    [
+     ">= 1.0.0, < 1.9.0",
+     "1.9.0"
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-g2j9-7rj2-gm6c",
+   "cve": "CVE-2026-33309",
+   "published": "2026-03-19",
+   "severity": "critical",
+   "summary": "Langflow has an Arbitrary File Write (RCE) via v2 API",
+   "url": "https://github.com/advisories/GHSA-g2j9-7rj2-gm6c",
+   "ranges": [
+    [
+     ">= 1.2.0, < 1.9.0",
+     "1.9.0"
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-rf6x-r45m-xv3w",
+   "cve": "CVE-2026-33053",
+   "published": "2026-03-18",
+   "severity": "high",
+   "summary": "Langflow is Missing Ownership Verification in API Key Deletion (IDOR)",
+   "url": "https://github.com/advisories/GHSA-rf6x-r45m-xv3w",
+   "ranges": [
+    [
+     "< 1.9.0",
+     "1.9.0"
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-vwmf-pq79-vjvx",
+   "cve": "CVE-2026-33017",
+   "published": "2026-03-17",
+   "severity": "critical",
+   "summary": "Unauthenticated Remote Code Execution in Langflow via Public Flow Build Endpoint",
+   "url": "https://github.com/advisories/GHSA-vwmf-pq79-vjvx",
+   "ranges": [
+    [
+     "<= 1.8.2",
+     "1.9.0"
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-3645-fxcv-hqr4",
+   "cve": "CVE-2026-27966",
+   "published": "2026-02-27",
+   "severity": "critical",
+   "summary": "Langflow has Remote Code Execution in CSV Agent",
+   "url": "https://github.com/advisories/GHSA-3645-fxcv-hqr4",
+   "ranges": [
+    [
+     "<= 1.8.0rc2",
+     null
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-g22f-v6f7-2hrh",
+   "cve": "CVE-2026-0770",
+   "published": "2026-01-23",
+   "severity": "high",
+   "summary": "Langflow affected by Remote Code Execution via validate_code() exec()",
+   "url": "https://github.com/advisories/GHSA-g22f-v6f7-2hrh",
+   "ranges": [
+    [
+     "<= 1.7.3",
+     null
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-c5cp-vx83-jhqx",
+   "cve": "CVE-2026-21445",
+   "published": "2026-01-02",
+   "severity": "high",
+   "summary": "Langflow Missing Authentication on Critical API Endpoints",
+   "url": "https://github.com/advisories/GHSA-c5cp-vx83-jhqx",
+   "ranges": [
+    [
+     "<= 1.7.0.dev44",
+     "1.7.1"
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-f43r-cc68-gpx4",
+   "cve": "CVE-2025-68478",
+   "published": "2025-12-19",
+   "severity": "high",
+   "summary": "External Control of File Name or Path in Langflow",
+   "url": "https://github.com/advisories/GHSA-f43r-cc68-gpx4",
+   "ranges": [
+    [
+     "< 1.7.1",
+     "1.7.1"
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-5993-7p27-66g5",
+   "cve": "CVE-2025-68477",
+   "published": "2025-12-19",
+   "severity": "high",
+   "summary": "Langflow vulnerable to Server-Side Request Forgery",
+   "url": "https://github.com/advisories/GHSA-5993-7p27-66g5",
+   "ranges": [
+    [
+     "< 1.7.1",
+     "1.7.1"
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-577h-p2hh-v4mv",
+   "cve": "CVE-2025-34291",
+   "published": "2025-12-06",
+   "severity": "critical",
+   "summary": "Langflow CORS misconfiguration enables Account Takeover and RCE",
+   "url": "https://github.com/advisories/GHSA-577h-p2hh-v4mv",
+   "ranges": [
+    [
+     "<= 1.6.9",
+     "1.7.0"
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-4gv9-mp8m-592r",
+   "cve": "CVE-2025-57760",
+   "published": "2025-08-25",
+   "severity": "high",
+   "summary": "Langflow Vulnerable to Privilege Escalation via CLI Superuser Creation (Post-RCE)",
+   "url": "https://github.com/advisories/GHSA-4gv9-mp8m-592r",
+   "ranges": [
+    [
+     "<= 1.5.0",
+     "1.5.1"
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-rvqx-wpfh-mfx7",
+   "cve": "CVE-2025-3248",
+   "published": "2025-06-17",
+   "severity": "critical",
+   "summary": "Langflow Unauth RCE",
+   "url": "https://github.com/advisories/GHSA-rvqx-wpfh-mfx7",
+   "ranges": [
+    [
+     "< 1.3.0",
+     "1.3.0"
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-5p5r-57fx-pmfr",
+   "cve": "CVE-2024-48061",
+   "published": "2024-11-05",
+   "severity": "medium",
+   "summary": "Langflow vulnerable to remote code execution",
+   "url": "https://github.com/advisories/GHSA-5p5r-57fx-pmfr",
+   "ranges": [
+    [
+     "<= 1.0.18",
+     null
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-56m6-4mhw-h3g5",
+   "cve": "CVE-2024-42835",
+   "published": "2024-10-31",
+   "severity": "high",
+   "summary": "langflow has vulnerability in PythonCodeTool component",
+   "url": "https://github.com/advisories/GHSA-56m6-4mhw-h3g5",
+   "ranges": [
+    [
+     "<= 1.0.12",
+     null
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-355v-2rjx-fpx7",
+   "cve": "CVE-2024-9277",
+   "published": "2024-09-27",
+   "severity": "medium",
+   "summary": "Inefficient Regular Expression Complexity in langflow",
+   "url": "https://github.com/advisories/GHSA-355v-2rjx-fpx7",
+   "ranges": [
+    [
+     "<= 1.0.18",
+     null
+    ]
+   ]
+  },
+  {
+   "ghsa": "GHSA-qg33-x2c5-6p44",
+   "cve": "CVE-2024-37014",
+   "published": "2024-06-10",
+   "severity": "high",
+   "summary": "Langflow remote code execution vulnerability",
+   "url": "https://github.com/advisories/GHSA-qg33-x2c5-6p44",
+   "ranges": [
+    [
+     "< 1.0.15",
+     "1.0.15"
+    ]
+   ]
+  }
+ ],
+ "ollama": {
+  "cve": "CVE-2024-39720",
+  "range": "< 0.1.46",
+  "recommended": "0.1.46",
+  "note": "从 GitHub Advisory 快照：Ollama 的 SQLite 处理整数溢出（< 0.1.46 受影响）"
+ }
+}
