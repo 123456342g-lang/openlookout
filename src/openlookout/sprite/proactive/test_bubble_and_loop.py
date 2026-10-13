@@ -378,18 +378,23 @@ def test_reconcile_drops_child_after_max_consecutive_start_failures():
 
     procs = {"brain": _DeadProc(), "gui": _AliveProc(), "recorder": _AliveProc()}
     fails: dict = {}
+    dropped: dict = {}
     logs: list[str] = []
+    drop_clock = 10_000.0
     for _ in range(live.MAX_START_FAILS):
-        live.reconcile_exits(procs, fails, start=boom, log=logs.append)
+        live.reconcile_exits(procs, fails, start=boom, log=logs.append,
+                             spawned={}, dropped=dropped, now=drop_clock)
 
-    assert "brain" not in procs, "连续起不来的孩子必须被摘出监督表"
+    assert "brain" not in procs, "连续起不来的孩子必须被摘出快速轮询"
     assert set(procs) == {"gui", "recorder"}, "摘除不能牵连健康的孩子"
     assert fails["brain"] == live.MAX_START_FAILS
     assert len(attempts) == live.MAX_START_FAILS
     assert any("放弃" in m for m in logs), "摘除要在监督日志里留一句"
+    assert "brain" in dropped, "摘除不是永久删除：必须进慢速探活表"
 
-    # 摘除后不再每 2 秒重试它（不刷 CPU）
-    live.reconcile_exits(procs, fails, start=boom, log=logs.append)
+    # 摘除后进慢速探活：间隔未到（60s）不许立刻重试，不刷 CPU
+    live.reconcile_exits(procs, fails, start=boom, log=logs.append,
+                         spawned={}, dropped=dropped, now=drop_clock)
     assert len(attempts) == live.MAX_START_FAILS
 
 
@@ -421,3 +426,284 @@ def test_successful_restart_resets_failure_counter():
     live.reconcile_exits(procs, fails, start=flaky, log=lambda m: None)
     assert fails == {"gui": 0}
     assert procs["gui"] is revived
+
+
+# ---------------- P1-1：Popen 成功但秒退必须计入启动失败 ----------------
+
+def test_successful_start_with_immediate_exit_is_counted_as_failure():
+    """热更新写入语法错误 brain 的真实路径：start 不抛异常，但新 proc 每个
+    tick（2s）都已退出。审查者实证旧代码 60 轮 spawn 60 次、fails 恒 0、
+    永不摘除；新代码必须在连续秒退达 MAX_START_FAILS 时把它转入慢速探活。
+    """
+    spawned_procs: list = []
+
+    def start(name):
+        proc = _DeadProc(1)
+        spawned_procs.append(proc)
+        return proc
+
+    t0 = 5_000.0
+    procs = {"brain": _DeadProc(1)}
+    spawned_at = {"brain": t0}
+    fails: dict = {}
+    dropped: dict = {}
+    logs: list[str] = []
+    for i in range(live.MAX_START_FAILS - 1):
+        live.reconcile_exits(procs, fails, start=start, log=logs.append,
+                             spawned=spawned_at, dropped=dropped, now=t0 + 2 * i)
+    assert fails["brain"] == live.MAX_START_FAILS - 1
+    assert "brain" in procs and not dropped, "预算未满前继续快速重试"
+    assert len(spawned_procs) == live.MAX_START_FAILS - 1
+
+    live.reconcile_exits(procs, fails, start=start, log=logs.append,
+                         spawned=spawned_at, dropped=dropped,
+                         now=t0 + 2 * (live.MAX_START_FAILS - 1))
+    assert "brain" not in procs, "连续秒退达上限必须摘出快速轮询"
+    assert "brain" in dropped, "摘除后进慢速探活，不是永久删除"
+    assert fails["brain"] == live.MAX_START_FAILS
+    assert len(spawned_procs) == live.MAX_START_FAILS
+    assert any("秒退" in m for m in logs)
+
+
+def test_child_that_survived_window_then_exited_restarts_without_failure():
+    """活过观察窗之后的退出（正常热更新/手动重启后的意外退出）：计 0、
+    立刻重新拉起，不进慢速探活。"""
+    t0 = 7_000.0
+    revived = _AliveProc()
+    procs = {"gui": _DeadProc(0)}
+    spawned_at = {"gui": t0 - live.SPAWN_OBSERVE_S - 1}
+    fails = {"gui": 4}
+    dropped: dict = {}
+    live.reconcile_exits(procs, fails, start=lambda n: revived, log=lambda m: None,
+                         spawned=spawned_at, dropped=dropped, now=t0)
+    assert procs["gui"] is revived
+    assert fails["gui"] == 0
+    assert dropped == {}
+
+
+def test_start_success_is_not_trusted_until_window_survived():
+    """start 成功本身不再清零：新 proc 活过观察窗才确认健康。
+
+    防的是「秒退 proc 靠下一次 start 没抛异常洗白计数」的旧 bug 变体。
+    """
+    t0 = 9_000.0
+    fresh = _AliveProc()
+    procs = {"recorder": _DeadProc(1)}
+    spawned_at = {"recorder": t0 - 2}
+    fails = {"recorder": 2}
+    dropped: dict = {}
+    args = dict(start=lambda n: fresh, spawned=spawned_at, dropped=dropped)
+
+    live.reconcile_exits(procs, fails, log=lambda m: None, now=t0, **args)
+    assert procs["recorder"] is fresh
+    assert fails["recorder"] == 3, "旧 proc 秒退要计数，新 proc 还在观察期"
+
+    def no_restart(name):
+        raise AssertionError("活着的孩子不该被重启")
+
+    live.reconcile_exits(procs, fails, start=no_restart, log=lambda m: None,
+                         spawned=spawned_at, dropped=dropped, now=t0 + 3)
+    assert fails["recorder"] == 3, "观察窗内只是观察期，不能清零"
+
+    live.reconcile_exits(procs, fails, start=no_restart, log=lambda m: None,
+                         spawned=spawned_at, dropped=dropped,
+                         now=t0 + live.SPAWN_OBSERVE_S + 1)
+    assert fails["recorder"] == 0
+    assert dropped == {}
+
+
+# ---------------- P1-2：摘除后的慢速探活与复活 ----------------
+
+@pytest.mark.parametrize("name", ["brain", "gui", "recorder"])
+def test_dropped_child_revives_after_successful_slow_probe(name):
+    """摘除 → 未到探活时刻不动 → 探活拉起（观察期内仍摘除）→ 活过观察窗
+    恢复正常轮询。brain/gui/recorder 三者行为必须一致。"""
+    t0 = 20_000.0
+    stable = _AliveProc()
+    calls: list = []
+
+    def start(n):
+        assert n == name
+        calls.append(1)
+        return stable
+
+    dropped = {name: {"retry_at": t0, "proc": None, "spawned": None}}
+    procs: dict = {}
+    spawned_at: dict = {}
+    fails = {name: live.MAX_START_FAILS}
+    logs: list[str] = []
+    kw = dict(start=start, log=logs.append, spawned=spawned_at, dropped=dropped)
+
+    live.reconcile_exits(procs, fails, now=t0 - 1, **kw)
+    assert calls == [] and procs == {}
+
+    live.reconcile_exits(procs, fails, now=t0, **kw)
+    assert len(calls) == 1 and name not in procs
+    assert dropped[name]["proc"] is stable, "探活 proc 在观察期内挂在 dropped 上"
+
+    live.reconcile_exits(procs, fails, now=t0 + live.SPAWN_OBSERVE_S - 1, **kw)
+    assert name not in procs and name in dropped and len(calls) == 1
+
+    live.reconcile_exits(procs, fails, now=t0 + live.SPAWN_OBSERVE_S + 1, **kw)
+    assert procs.get(name) is stable
+    assert name not in dropped
+    assert fails[name] == 0
+    assert any("恢复" in m for m in logs), "恢复必须记监督日志"
+
+    live.reconcile_exits(procs, fails, now=t0 + 600, **kw)
+    assert len(calls) == 1, "恢复后走正常轮询，不许重复 spawn"
+
+
+def test_dropped_child_keeps_waiting_silently_after_failed_probes():
+    """探活 proc 秒退 / start 抛 OSError：静默等待下一个探活周期，不刷日志；
+    直到某次探活活过观察窗才复活。"""
+    t0 = 30_000.0
+    mode = {"kind": "dead"}
+    stable = _AliveProc()
+
+    def start(n):
+        if mode["kind"] == "oserror":
+            raise OSError("disk still full")
+        if mode["kind"] == "dead":
+            return _DeadProc(1)
+        return stable
+
+    dropped = {"brain": {"retry_at": t0, "proc": None, "spawned": None}}
+    procs: dict = {}
+    spawned_at: dict = {}
+    fails = {"brain": live.MAX_START_FAILS}
+    logs: list[str] = []
+    kw = dict(start=start, log=logs.append, spawned=spawned_at, dropped=dropped)
+
+    # 第一次探活拉起秒退 proc：观察窗内被判定失败，回等待，零日志
+    live.reconcile_exits(procs, fails, now=t0, **kw)
+    live.reconcile_exits(procs, fails, now=t0 + 2, **kw)
+    assert procs == {} and logs == []
+    assert dropped["brain"]["proc"] is None
+    assert dropped["brain"]["retry_at"] == t0 + 2 + live.RESPAWN_PROBE_S
+
+    # 下一轮探活 start OSError：继续静默等待
+    mode["kind"] = "oserror"
+    live.reconcile_exits(procs, fails, now=t0 + 2 + live.RESPAWN_PROBE_S, **kw)
+    assert procs == {} and logs == []
+    assert dropped["brain"]["retry_at"] == t0 + 2 + 2 * live.RESPAWN_PROBE_S
+
+    # 磁盘恢复：探活拉起成功
+    mode["kind"] = "ok"
+    revive_t = t0 + 2 + 2 * live.RESPAWN_PROBE_S
+    live.reconcile_exits(procs, fails, now=revive_t, **kw)
+    assert dropped["brain"]["proc"] is stable and procs == {} and logs == []
+    live.reconcile_exits(procs, fails, now=revive_t + live.SPAWN_OBSERVE_S + 1, **kw)
+    assert procs.get("brain") is stable and "brain" not in dropped
+    assert fails["brain"] == 0
+    assert len([m for m in logs if "恢复" in m]) == 1
+
+
+# ---------------- P2-3：监督日志写盘恢复可见 ----------------
+
+def test_log_reports_recovery_and_resets_counter(monkeypatch):
+    """写盘失败→成功跳变时补一条恢复日志并归零（pythonw 无控制台时唯一证据）。"""
+
+    class FakeHandle:
+        def __init__(self, sink):
+            self.sink = sink
+
+        def write(self, data):
+            self.sink.append(data)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    written: list[str] = []
+
+    class FailOnceLog:
+        def __init__(self):
+            self.calls = 0
+
+        def open(self, *a, **k):
+            self.calls += 1
+            if self.calls == 1:
+                raise OSError("no space left on device")
+            return FakeHandle(written)
+
+    class OkDir:
+        def mkdir(self, *a, **k):
+            pass
+
+    monkeypatch.setattr(live, "SUP_LOG", FailOnceLog())
+    monkeypatch.setattr(live, "DIR", OkDir())
+    monkeypatch.setattr(live, "_LOG_FAILS", 0)
+
+    live.log("写不进去的一行")
+    assert live._LOG_FAILS == 1
+    live.log("恢复后的一行")
+    assert live._LOG_FAILS == 0
+    joined = "".join(written)
+    assert "恢复" in joined and "1 次失败" in joined
+
+
+# ---------------- P2-4：启动期单个孩子失败不击穿监督进程 ----------------
+
+def test_startup_failure_of_one_child_does_not_abort_the_rest():
+    """0 字节磁盘/句柄耗尽时，{n: start(n)} 在 try 外曾让监督进程直接
+    traceback、一个孩子都没有。"""
+
+    def start(name):
+        if name == "recorder":
+            raise OSError("no space")
+        return _AliveProc()
+
+    procs, spawned_at, fails, dropped = live.spawn_children(
+        ["brain", "gui", "recorder"], start=start, log=lambda m: None, now=1.0)
+    assert set(procs) == {"brain", "gui"}
+    assert set(spawned_at) == {"brain", "gui"}
+    assert fails["recorder"] == 1
+    assert dropped["recorder"]["retry_at"] == 0.0, "第一轮 reconcile 就立刻再试一次"
+    assert dropped["recorder"]["proc"] is None
+
+
+# ---------------- P2-1/P2-2：away lead 分流 + 心跳调用点 kwarg 钉死 ----------------
+
+def test_away_heartbeat_lead_does_not_encourage_opening_a_window():
+    """away 轮 lead 不得再写「也可能是自然开口的窗口」（与 watching
+    「别打扰，回来再说」正面冲突）；非 away 分支保留该鼓励。"""
+    tree = ast.parse(_src(BRAIN))
+    run_fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef) and n.name == "run")
+    leads = []
+    for node in ast.walk(run_fn):
+        if (isinstance(node, ast.Assign)
+                and any(isinstance(t, ast.Name) and t.id == "lead" for t in node.targets)
+                and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)):
+            leads.append(node.value.value)
+    away_leads = [s for s in leads if "别打扰" in s]
+    assert len(away_leads) == 1, "away 分支必须有自己的不打扰 lead"
+    assert "自然开口" not in away_leads[0]
+    assert any("自然开口" in s for s in leads), "非 away 心跳轮的开口窗口鼓励要保留"
+    # 分流条件必须真挂在 watching 的 away 阈值上，不能是写了却进不去的死分支
+    assert 'away = idle_s >= watching.DEFAULTS["away_s"]' in _src(BRAIN)
+
+
+def test_run_heartbeat_note_call_kwargs_match_signature():
+    """调用点关键字写错一个，run() 每轮 TypeError、brain 起不来，而纯函数
+    测试全绿（PR #16 复审 P2-2）。AST 钉死调用 kwarg 集合 == 签名 kw-only 形参。
+    """
+    tree = ast.parse(_src(BRAIN))
+    sig_fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "heartbeat_note_if_due")
+    expected = {a.arg for a in sig_fn.args.kwonlyargs}
+    run_fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef) and n.name == "run")
+    calls = [n for n in ast.walk(run_fn)
+             if isinstance(n, ast.Call)
+             and isinstance(n.func, ast.Name)
+             and n.func.id == "heartbeat_note_if_due"]
+    assert len(calls) == 1
+    call = calls[0]
+    assert call.args == [], "必须全关键字调用，错一个名字就每轮 TypeError"
+    assert {kw.arg for kw in call.keywords} == expected

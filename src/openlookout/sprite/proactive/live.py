@@ -276,17 +276,29 @@ def log(msg: str) -> None:
 
     日志是附属品，精灵不是。所以这里必须吞掉异常：宁可丢一行日志，
     也不能让一次磁盘满把整个陪伴循环带走。
+
+    写盘从失败跳回成功时补一条恢复日志并归零（PR #16 复审 P2-3）：
+    pythonw 没有控制台，不补这行的话「之前一直写不进去」永远不可见。
     """
     global _LOG_FAILS
     line = f"{datetime.now():%H:%M:%S} {msg}"
+    recovered = 0
     try:
         DIR.mkdir(parents=True, exist_ok=True)
         with SUP_LOG.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
+            if _LOG_FAILS:
+                recovered = _LOG_FAILS
+                f.write(f"{datetime.now():%H:%M:%S} 监督日志写盘已恢复"
+                        f"（此前连续 {recovered} 次失败）\n")
+        _LOG_FAILS = 0
     except OSError:
         _LOG_FAILS += 1
     try:
         print(line, flush=True)
+        if recovered:
+            print(f"{datetime.now():%H:%M:%S} 监督日志写盘已恢复"
+                  f"（此前连续 {recovered} 次失败）", flush=True)
     except Exception:
         pass
 
@@ -330,49 +342,202 @@ def start(name: str) -> subprocess.Popen:
                             creationflags=NO_WINDOW, stdout=out, stderr=subprocess.STDOUT)
 
 
-# 单个子进程连续多少次拉不起来就把它从监督表摘掉。start() 失败通常是磁盘满/
-# 句柄耗尽，瞬时故障本该重试；但代码本身有语法错误时会永久失败，每 2 秒重试
-# 一次只会刷满 CPU——超过这个次数就放弃这一个孩子，其余部分继续活着。
+# 单个子进程连续多少次启动失败就把它从**快速轮询**摘掉。start() 失败通常是
+# 磁盘满/句柄耗尽，瞬时故障本该重试；但代码本身有语法错误时会永久失败，
+# 每 2 秒重试一次只会刷满 CPU——超过这个次数就转入慢速探活（见下），其余部分
+# 继续活着。30 次 × 2s = 60s 快速预算。
 MAX_START_FAILS = 30
+# 「活稳了」观察窗（秒）：Popen 成功不等于拉起成功。热更新写入带语法错误的
+# brain 时，start() 正常返回、解释器启动后立刻非 0 退出；旧代码只对 start()
+# 抛 OSError 计数，秒退 proc 下一 tick 走「退出已拉起、fails=0」，计数恒 0、
+# 永不摘除（PR #16 复审 P1-1）。新 proc 存活不足此时长就退出 = 一次启动失败；
+# 活过它才确认健康并清零。工程初值：监督 tick=2s，语法错误/缺依赖都在解释器
+# 启动 1~2s 内暴露，给到 10s 留冷启动余量；无文献背书，实机观察后可调。
+SPAWN_OBSERVE_S = 10.0
+# 被摘孩子的慢速探活间隔（秒）。摘除不是永久死亡：真实 ENOSPC 事故持续约
+# 3 分钟（17:06→17:09），旧代码 60s 预算耗尽后永久 pop，磁盘恢复 brain 也
+# 不复活，精灵永久沉默（PR #16 复审 P1-2）。被摘孩子每这么久试拉一次，
+# 活过 SPAWN_OBSERVE_S 即恢复正常轮询；探活失败静默等下一轮。
+# 工程初值，无文献背书：最坏 1 分钟复活延迟可接受，磁盘满时也不会每 2s 刷失败。
+RESPAWN_PROBE_S = 60.0
 
 
-def reconcile_exits(procs: dict, fails: dict, *, start=start, log=log,
-                    max_fails: int = MAX_START_FAILS) -> dict:
-    """检查并拉起已退出的子进程；连续失败达上限的孩子被摘除。
+def spawn_children(names=CHILDREN, *, start=start, log=log, now=None) -> tuple:
+    """启动期逐个拉起孩子；单个失败不许击穿整个监督进程。
 
-    纯编排、可注入：``start``/``log`` 都是参数，测试不必真的拉起或杀掉任何
-    进程（issue #11 验收：监督容错此前零覆盖）。
-
-    - 孩子还活着（poll() is None）：跳过；
-    - start 抛 OSError（磁盘满/句柄耗尽/可执行文件缺失都属此类）：计数 +1，
-      达到 ``max_fails`` 就把该孩子从 ``procs`` 摘除，其余孩子不受牵连；
-    - start 成功：计数清零。
-    其它异常不在此吞——交给监督轮外层的 try/except 兜底，免得掩盖编程错误。
-    ``fails`` 原地更新并返回，``procs`` 也是原地改。
+    旧代码 ``{n: start(n) for n in CHILDREN}`` 在 try 之外（PR #16 复审 P2-4）：
+    0 字节磁盘/句柄耗尽时第一个孩子 start() 抛 OSError，监督进程直接 traceback，
+    一个孩子都没有。改成逐个容错：失败的孩子记一次失败并进慢速探活表
+    （retry_at=0：第一轮 reconcile 立刻再试一次，之后按 RESPAWN_PROBE_S），
+    其余孩子照常启动。返回 ``(procs, spawned, fails, dropped)`` 四态。
     """
-    for name, proc in list(procs.items()):
-        if proc.poll() is None:
-            continue
+    now = time.time() if now is None else float(now)
+    procs: dict = {}
+    spawned: dict = {}
+    fails: dict = {}
+    dropped: dict = {}
+    for name in names:
         try:
             procs[name] = start(name)
         except OSError as exc:
+            log(f"{name} 启动期拉起失败（{type(exc).__name__}），不影响其余孩子，"
+                "进入慢速探活")
+            fails[name] = 1
+            dropped[name] = {"retry_at": 0.0, "proc": None, "spawned": None}
+            continue
+        spawned[name] = now
+        fails[name] = 0
+    return procs, spawned, fails, dropped
+
+
+def reconcile_exits(procs: dict, fails: dict, *, start=start, log=log,
+                    max_fails: int = MAX_START_FAILS, spawned: dict | None = None,
+                    dropped: dict | None = None, now: float | None = None) -> dict:
+    """检查并拉起已退出的子进程；连续启动失败达上限的孩子转慢速探活，且可复活。
+
+    纯编排、可注入：``start``/``log``/``now`` 都是参数，测试不必真的拉起或杀掉
+    任何进程、也不用真睡（issue #11 验收：监督容错此前零覆盖）。
+
+    状态四件套（``spawned``/``dropped`` 缺省时内部临时建，产线由 supervise 持有）：
+
+    - ``procs``   正常监督表里的孩子；
+    - ``spawned`` name → 最近一次 spawn 时刻，用来区分秒退与正常退出；
+    - ``fails``   name → 连续启动失败计数；
+    - ``dropped`` name → 慢速探活状态 ``{"retry_at", "proc", "spawned"}``。
+
+    计数规则（PR #16 复审 P1-1）：
+
+    - 孩子活着且活过 ``SPAWN_OBSERVE_S``：确认健康，历史失败清零；
+    - start 抛 OSError：计数 +1；
+    - start 成功但新 proc 在 ``SPAWN_OBSERVE_S`` 内退出（热更新写入语法错误
+      brain 的真实路径）：同样计数 +1，并再拉起一次；
+    - 活过观察窗之后的退出（正常热更新/手动重启后的意外退出）：计 0、照常拉起；
+    - 计数达 ``max_fails``：摘出快速轮询、转入慢速探活，其余孩子不受牵连。
+
+    慢速探活（P1-2）：被摘孩子每 ``RESPAWN_PROBE_S`` 秒试拉一次；探活 proc
+    活过观察窗才回到正常轮询并记恢复日志，探活失败静默等下一轮。brain/gui/
+    recorder 三者行为完全一致。
+    其它（非 OSError）异常不在此吞——交给监督轮外层的 try/except，免得掩盖
+    编程错误。``fails`` 原地更新并返回，``procs``/``spawned``/``dropped`` 原地改。
+    """
+    now = time.time() if now is None else float(now)
+    if spawned is None:
+        spawned = {}
+    if dropped is None:
+        dropped = {}
+
+    def retire(name: str, reason: str) -> None:
+        log(f"{name} 连续 {fails.get(name, 0)} 次{reason}，暂时放弃快速重试，"
+            f"转入慢速探活（每 {RESPAWN_PROBE_S:.0f}s 试拉一次，"
+            f"活过 {SPAWN_OBSERVE_S:.0f}s 才恢复），其余部分继续")
+        procs.pop(name, None)
+        spawned.pop(name, None)
+        dropped[name] = {"retry_at": now + RESPAWN_PROBE_S,
+                         "proc": None, "spawned": None}
+
+    # 1) 慢速探活：先于正常轮询处理，恢复成功的孩子本轮就交给下面的正常路径接管。
+    for name in list(dropped):
+        entry = dropped[name]
+        probe = entry.get("proc")
+        if probe is None:
+            if now < float(entry["retry_at"]):
+                continue
+            try:
+                probe = start(name)
+            except OSError:
+                # 探活失败静默等待下一轮：磁盘满时不刷日志、不刷 CPU。
+                entry["retry_at"] = now + RESPAWN_PROBE_S
+                continue
+            entry["proc"] = probe
+            entry["spawned"] = now
+            continue
+        age = now - float(entry["spawned"])
+        if probe.poll() is None:
+            if age >= SPAWN_OBSERVE_S:
+                log(f"{name} 慢速探活成功（新进程已存活 {age:.0f}s），恢复正常监督轮询")
+                procs[name] = probe
+                spawned[name] = float(entry["spawned"])
+                fails[name] = 0
+                dropped.pop(name, None)
+            continue
+        if age < SPAWN_OBSERVE_S:
+            # 探活 proc 秒退：回到等待，下一轮再试（不记日志，保持静默）。
+            entry["proc"] = None
+            entry["spawned"] = None
+            entry["retry_at"] = now + RESPAWN_PROBE_S
+            continue
+        # 边界竞态：刚好活过观察窗才退出——按已恢复处理，本轮正常路径立刻接管。
+        procs[name] = probe
+        spawned[name] = float(entry["spawned"])
+        fails[name] = 0
+        dropped.pop(name, None)
+
+    # 2) 正常监督表里的孩子。
+    for name, proc in list(procs.items()):
+        if proc.poll() is None:
+            if name in spawned and now - spawned[name] >= SPAWN_OBSERVE_S and fails.get(name):
+                fails[name] = 0
+                log(f"{name} 已稳定存活超过 {SPAWN_OBSERVE_S:.0f}s，"
+                    "连续启动失败计数清零")
+            continue
+        died_early = name in spawned and now - spawned[name] < SPAWN_OBSERVE_S
+        try:
+            new = start(name)
+        except OSError as exc:
             fails[name] = fails.get(name, 0) + 1
             if fails[name] >= max_fails:
-                log(f"{name} 连续 {fails[name]} 次拉不起来（{type(exc).__name__}），"
-                    "暂时放弃它，其余部分继续")
-                procs.pop(name, None)
+                retire(name, f"拉不起来（{type(exc).__name__}）")
             continue
-        fails[name] = 0
-        log(f"{name} 退出，已自动拉起")
+        procs[name] = new
+        spawned[name] = now
+        if died_early:
+            # Popen 成功但新进程秒退，与 start() 抛 OSError 同属一次启动失败：
+            # 不能因为 start 没抛异常就把计数清零。
+            fails[name] = fails.get(name, 0) + 1
+            if fails[name] >= max_fails:
+                retire(name, "启动后秒退")
+            else:
+                log(f"{name} 启动后 {SPAWN_OBSERVE_S:.0f}s 内退出"
+                    f"（连续第 {fails[name]} 次，疑似启动即崩），已再拉起")
+        else:
+            # 活过观察窗之后的退出计 0：热更新/手动重启后的意外退出，照常拉起。
+            fails[name] = 0
+            log(f"{name} 退出，已自动拉起")
     return fails
 
 
 def supervise() -> None:
-    procs = {n: start(n) for n in CHILDREN}
+    procs, spawned, start_fails, dropped = spawn_children()
     seen_all, seen_brain = watched_stamp(), brain_stamp()
     log("启动：brain（持续视觉上下文）+ 窗口 + 操作记录器")
-    # 每个孩子的连续拉起失败计数；达 MAX_START_FAILS 由 reconcile_exits 摘除。
-    start_fails: dict[str, int] = {}
+
+    def hot_swap(name: str) -> None:
+        """代码变了：无条件换一个新 proc（编辑代码本身就是显式复活信号）。
+
+        也要接管慢速探活中的孩子（P1-2）：它不在 procs 而在 dropped 里，
+        探活 proc 在飞就先 terminate。start() 若抛 OSError，把它重设为
+        retry_at=0 的探活（下一轮立刻试）后继续抛出交给外层 try——避免它
+        既不在 procs 也没有探活计划，或之后探活路径双开第二个同名孩子。
+        必须在成功后才更新 spawned，热重启的秒退才会被 P1-1 计数。
+        """
+        old = procs.pop(name, None)
+        entry = dropped.pop(name, None)
+        if old is None and entry is not None:
+            old = entry.get("proc")
+        if old is not None:
+            old.terminate()
+            try:
+                old.wait(10)
+            except subprocess.TimeoutExpired:
+                old.kill()
+        try:
+            new = start(name)
+        except OSError:
+            dropped[name] = {"retry_at": 0.0, "proc": None, "spawned": None}
+            raise
+        procs[name] = new
+        spawned[name] = time.time()
+
     try:
         while True:
             time.sleep(CHECK_S)
@@ -381,28 +546,18 @@ def supervise() -> None:
             # 风险还有 stat()、start()、poll()。它们都是可恢复的瞬时故障，
             # 而「监督进程活着」本身就是精灵不消失的前提。
             try:
-                reconcile_exits(procs, start_fails)
+                reconcile_exits(procs, start_fails, spawned=spawned, dropped=dropped)
                 b = brain_stamp()
                 if b != seen_brain:
                     # 只有 brain 自己变了才重启它：它正在积累的视觉上下文比新代码更值钱
                     seen_brain = b
                     log("brain 代码变了：重启 brain（视觉上下文会重来，这是必要代价）")
-                    p = procs.get("brain")
-                    if p: p.terminate()
-                    if p:
-                        try: p.wait(10)
-                        except subprocess.TimeoutExpired: p.kill()
-                    procs["brain"] = start("brain")
+                    hot_swap("brain")
                 a = watched_stamp()
                 if a != seen_all:
                     # 别的文件变了：不杀 brain。改动会在它下一轮自然生效。
                     seen_all = a
-                    g = procs.get("gui")
-                    if g: g.terminate()
-                    if g:
-                        try: g.wait(10)
-                        except subprocess.TimeoutExpired: g.kill()
-                    procs["gui"] = start("gui")
+                    hot_swap("gui")
                     log("其它代码变了：只热更新窗口，brain 的持续视觉上下文保留")
             except OSError as exc:
                 # 磁盘满、句柄耗尽之类。丢掉这一轮的判断，下一轮再来。
@@ -412,9 +567,15 @@ def supervise() -> None:
     except KeyboardInterrupt:
         pass
     finally:
-        for p in procs.values():
+        for p in list(procs.values()):
             try: p.terminate()
             except Exception: pass
+        # 慢速探活中在飞的 proc 也要收掉，否则监督退出后它会变成孤儿。
+        for entry in dropped.values():
+            p = entry.get("proc")
+            if p is not None:
+                try: p.terminate()
+                except Exception: pass
         log("已停止")
 
 
