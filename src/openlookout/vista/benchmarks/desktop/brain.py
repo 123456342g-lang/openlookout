@@ -26,7 +26,20 @@ OFFERS = PERCEIVE / "offers.jsonl"
 PROJECT = Path(__file__).resolve().parents[3]
 CHANGE_MIN = 0.01          # 屏幕缩略图平均差异超 1% 就重新判断
 MIN_GAP_S = 5              # 页面切换后尽快跟上；节流交给模型判断和输出闸
-HEARTBEAT_S = 900          # 兜底心跳：主触发已交由 sprite/proactive/timing.py 的事件边界算
+# 兜底心跳。实测（10-13 17:03~17:09）：精灵说完一句奥特曼话题后，接下来
+# 四轮全部是 quiet，用户看到的感受是「启动一次说一次话，就不再说了」。
+# 原因不是它不想说，是**根本没有轮次可醒**：屏幕静止 → screen/window 都不 due，
+# timing 事件边界几小时不 fire，兜底心跳又是 900s。于是最长可以静默 15 分钟，
+# 而一轮本身还要 30~100s。
+#
+# 心跳的作用是「让模型有机会重新判断」，不是「逼它说话」——醒了之后开口与否
+# 仍然完全由 companion 的 kind 决定。所以这里可以调短：调短只是提高被审的频率，
+# 不会制造它不想说的话。
+#
+# 为什么不是 60s：每轮真实耗时 30~100s（host-native 拉起 claude.exe + MCP 连接），
+# 心跳小于一轮耗时会退化成连续排队。这里取 240s——保证「任何时候静默不超过
+# 约 4 分钟 + 一轮耗时」，同时留出足够空档。
+HEARTBEAT_S = 240
 PREP_EVERY_TURNS = 24      # rotate one background refresh window every N turns,
                            # even during a busy screen
 # An unanswered user message is the one trigger the sprite cannot afford to
@@ -404,6 +417,65 @@ def idle_scan_fact(*, heartbeat: bool, idle_s: float, now: float) -> str:
             "不要一次性扫完整历史，沿具体假设逐步补证据；比较继续原方案、换方向、准备下一步和等待的收益，"
             "把预期改善、验证方式与结果写进 WORKING.md，不是为了有事可做而制造任务。"
             "基础服务和公共检索只在能改变当前判断或改善交流时使用，不自动查每日天气。")
+
+
+def heartbeat_is_due(now: float, last_turn_finished: float) -> bool:
+    """距上一轮**结束**是否已过 HEARTBEAT_S。
+
+    关键约定：run() 不只在开轮时刷 ``last_turn``，轮末还会再刷一次。
+    一轮可以跑到 TURN_TIMEOUT_S=300s，而 HEARTBEAT_S=240s < 300s；若时间戳
+    只记轮首，超时轮结束的下一个 tick 立刻满足心跳条件，背靠背再开一轮
+    （issue #11 验收：240/300 边角）。以轮末为基准，心跳间隔才真的是 240s。
+    """
+    return now - last_turn_finished >= HEARTBEAT_S
+
+
+def heartbeat_note(turn_gap_s: float) -> str:
+    """兜底心跳轮专用提示词（实际下发给模型的那段）。
+
+    心跳的职责是让模型**重新判断**，不是逼它说话——开口与否仍由 companion
+    的 kind 决定。所以这里不许出现「默认安静」：心跳是屏幕静止时唯一的
+    唤醒源，每 4 分钟命令一次闭嘴等于自我锁死（10-13 17:03 真实反馈）。
+
+    数字语义（issue #11 新发现 3）：``turn_gap_s`` 必须是**距上一轮判断真实
+    经过的时间**（run() 在重置 last_turn 之前捕获的 now-last_turn），不能拿
+    键鼠无输入时长 ``idle_s`` 顶替——idle 量的是「人有没有碰键鼠」，看视频、
+    读书、用另一台设备都会让它变大，但那不等于「距上次判断」。
+    """
+    gap_min = max(0.0, turn_gap_s) / 60.0
+    return (
+        f"\n【这是兜底心跳轮，距上一轮判断已 {gap_min:.0f} 分钟，期间没有新的行为事件】"
+        "屏幕没动不代表没事发生：时间在走，他可能正在读、在想、在发呆或在等。"
+        "这类时刻是最自然的开口窗口，而且不需要先取证——"
+        "一句不取证也能说的日常短话（这个点还在弄这些、刚注意到的一件小事、"
+        "入夜/吃没吃这类一眼能看到的）此刻就成立。"
+        "但仍然由你判断：真有话就说，没有就 quiet，"
+        "不要用工作话题伪装闲聊，也不要为了填满空闲造话题。"
+    )
+
+
+def heartbeat_note_if_due(*, heartbeat_due: bool, turn_gap_s: float, idle_s: float,
+                          reply_pending: bool, fb: str, return_due: bool,
+                          continue_due: bool, goal_due: bool) -> str:
+    """本轮是否该附心跳专用的「自然开口窗口」提示；不该附时返回空串。
+
+    三种轮次明确排除（issue #11 新发现 4）：
+
+    - ``reply_pending``：他在等回话，【优先回话】已经在本轮提示里，心跳鼓励
+      叠加上去会让「必须回」和「可以自然开口」两套指令互相打架；
+    - 人离开了（键鼠无输入达 ``watching.DEFAULTS['away_s']``，300s）：同一轮
+      的 watching 事实附的是「别打扰，回来再说」，这里若鼓励开口就是正面
+      冲突，必须让位——away 心跳轮回落到后面的「默认安静」分支；
+    - 有真实锚点的轮次（新反馈 fb / away 回归 return_due / 续办 / 目标）：
+      它们各有自己的提示词，心跳文案不叠加。
+    """
+    if not heartbeat_due or reply_pending:
+        return ""
+    if fb or return_due or continue_due or goal_due:
+        return ""
+    if idle_s >= watching.DEFAULTS["away_s"]:
+        return ""
+    return heartbeat_note(turn_gap_s)
 
 
 def conversation_fact(*, idle_s: float, now: float) -> str:
@@ -1375,7 +1447,10 @@ def run() -> None:
             if isinstance(backend, VisualDirectBackend):
                 backend.history_context = historyw.context
             history_due = bool(history_line) and now - last_turn >= MIN_GAP_S
-            heartbeat_due = now - last_turn >= HEARTBEAT_S   # 兜底，不是主触发
+            # 先于本轮 last_turn 重置捕获真实间隔：心跳文案里的「距上一轮判断
+            # 已 X 分钟」必须用它，不能用键鼠 idle（见 heartbeat_note 说明）。
+            turn_gap_s = now - last_turn
+            heartbeat_due = heartbeat_is_due(now, last_turn)   # 兜底，不是主触发；以轮末为基准
             timing_due, timing_why = False, ""
             if tt is not None:
                 try:
@@ -1451,7 +1526,11 @@ def run() -> None:
             idle_s = current_idle_s
             if prep_due and not reply_pending:
                 cycle = idle_scan_fact(heartbeat=True, idle_s=idle_s, now=now)
-                lead = "这是本次背景准备轮。"
+                # 心跳轮过去一律叫「背景准备轮」，配合下面那段「默认安静」，
+                # 等于每 4 分钟告诉模型一次闭嘴。名字本身就在带偏判断：
+                # 这一轮首先是「重新看一眼他现在的状态」，准备只是其中一项可能。
+                lead = ("这是兜底心跳轮：重新判断此刻的状态，"
+                        "该准备就准备，也可能是自然开口的窗口。")
             else:
                 cycle = ""
                 lead = "这是回话轮：他在等你回答。" if reply_pending else "这是本次实时工作轮。"
@@ -1478,6 +1557,12 @@ def run() -> None:
             if history_line: text += "\n" + history_line
             history_line = ""
             text += "\n" + conversation_fact(idle_s=idle_s, now=now)
+            # 心跳专用「自然开口窗口」提示的排除条件都收在 heartbeat_note_if_due：
+            # reply_pending / away（watching 已要求「别打扰」）/ 有锚点轮次一律不附。
+            hb_note = heartbeat_note_if_due(
+                heartbeat_due=heartbeat_due, turn_gap_s=turn_gap_s, idle_s=idle_s,
+                reply_pending=reply_pending, fb=fb, return_due=return_due,
+                continue_due=continue_due, goal_due=bool(goal_due))
             if timing_why:
                 text += ("\n【为什么是现在】" + timing_why
                          + "。这是由行为事件边界触发的时刻（不是定时轮）。"
@@ -1486,9 +1571,16 @@ def run() -> None:
                          + "刚切换到的应用/窗口标题之一），让用户一眼看出你是因这件事、在这个时刻开口；"
                          + "拿不到具体对象就不要开口。结尾不要问「要不要我做……」，"
                          + "能自己做的就自己做完再说结果。")
-            elif not (fb or return_due or continue_due or goal_due):
-                # 本轮不是行为事件边界触发的（心跳/背景核对/维护）。这类轮次过去不受
-                # V(开口)>V(沉默) 约束，是“没看准时机也开口”的漏口。
+            elif hb_note:
+                # 兜底心跳轮的完整说明（为什么不能再写「默认安静」、数字为什么
+                # 用距上轮时间而不是键鼠 idle、哪些轮次必须排除）都在
+                # heartbeat_note / heartbeat_note_if_due 的 docstring 里。
+                text += hb_note
+            elif not reply_pending and not (fb or return_due or continue_due or goal_due):
+                # 背景准备/维护轮，以及人已离开（away）的心跳轮：这些不是行为
+                # 边界，watching 事实在 away 时还附了「别打扰，回来再说」，
+                # 仍然偏向安静。reply_pending 轮也不进来——上面的【优先回话】
+                # 已经要求「这一轮不要 quiet」，再附「默认安静」会自相矛盾。
                 text += ("\n【注意：本轮不是行为边界触发的】没有用户刚做的事作为锚点，"
                          "默认安静。只有当你手上有一个**已经核对过、且必须让他现在知道**的具体结果时"
                          "才开口，否则 quiet；不要用指标、进度或对别的文档的评论充当开口理由。")
@@ -1506,6 +1598,12 @@ def run() -> None:
                 backend.feedback_since = now
             offered_revision = agenda.revision
             r = backend.run(runtime.prepare_input(Phase.STEP, public_text=text, observation=session.observe(vis)))
+            # 轮末再刷一次 last_turn（轮首 1516 行那次之外）：一轮可达
+            # TURN_TIMEOUT_S=300s > HEARTBEAT_S=240s，只记轮首的话，超时轮
+            # 结束的下一个 tick 立即满足心跳，背靠背再开一轮。以轮末为基准后，
+            # 心跳间隔才真的是 240s；MIN_GAP_S 节流同理按轮末算。
+            # 详见 heartbeat_is_due 的 docstring。
+            last_turn = time.time()
             if not isinstance(backend, VisualDirectBackend) and r.boundary is not None:
                 agenda.mark_delivered(offered_revision)
             if live_screen is not None:
