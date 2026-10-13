@@ -1421,20 +1421,61 @@ def load_coach_ledger() -> dict:
     return coach.new_ledger()
 
 
+_COACH_JSONL_CACHE: dict[str, dict] = {}
+
+
+def _cached_jsonl_rows(path: Path, cache: dict | None = None) -> list[dict]:
+    """mtime/size 缓存读 jsonl：文件没变就不重读（P2-5，文件会无限增长）。
+
+    stamp 用 (mtime_ns, size)：只追加不改写的账本在 size 不变时内容必然没变；
+    任何读取失败都退化成空表，缓存按路径隔离且不上锁，教练回流不能炸主循环。
+    """
+    key = str(path)
+    slot = cache if cache is not None else _COACH_JSONL_CACHE.setdefault(key, {})
+    try:
+        stat = path.stat()
+    except OSError:
+        slot.clear()
+        return []
+    stamp = (stat.st_mtime_ns, stat.st_size)
+    if stamp == slot.get("stamp"):
+        return slot.get("rows", [])
+    rows = _rows(path)
+    slot["stamp"], slot["rows"] = stamp, rows
+    return rows
+
+
+def _published_coach_offers(path: Path | None = None) -> set:
+    """实际发布上屏的气泡键集合 {(topic, t)}（offers.jsonl 的 result=shown 行）。
+
+    被 help 层判重抑制的决策没有 shown 行（session.py:200-216 的发布点不查
+    账本，本进程不能改它），用这个键在事后区分「真上屏」与「没上屏」：没上屏
+    的 coach 决策不得 mark_spoken（P2-4）。
+    """
+    path = path or OFFERS
+    return {(str(row.get("topic") or ""), float(row.get("t") or 0.0))
+            for row in _cached_jsonl_rows(path)
+            if row.get("result") == "shown"}
+
+
 def sync_coach(ledger, session, *, seen_decisions: int, now: float,
-               surface: bool, outcomes_path: Path | None = None) -> int:
+               surface: bool, outcomes_path: Path | None = None,
+               offers_path: Path | None = None) -> int:
     """每轮 companion 决策后调用：topic 约定 → 确定性账本迁移 + outcomes 回流。
 
     接线刻意薄：模型判断「这件事算不算某模式的证据」与教练话措辞；状态迁移
     全部在 coach.py 的纯函数里。surface 是本轮是否处在允许教练开口的时刻
     （断点/等待；非流中、非离开、非回话轮），由主循环的时机信号算出。
-    返回已消费到的 decisions 下标。
+    发布核验用 offers.jsonl 的 shown 行，outcomes/offers 都按 mtime/size
+    缓存，避免每轮 O(n) 全量扫。返回已消费到的 decisions 下标。
     """
     decisions = list(getattr(session, "decisions", [])[seen_decisions:])
-    for row in coach.apply_decisions(ledger, decisions, now, surface=surface):
+    published = _published_coach_offers(offers_path)
+    for row in coach.apply_decisions(ledger, decisions, now,
+                                     surface=surface, published=published):
         print(f"[brain] coach 违规开口被工程闸拦下（不迁移状态）：{row['id']} {row['reason']}", flush=True)
     path = outcomes_path or (PERCEIVE / "outcomes.jsonl")
-    for row in _rows(path):
+    for row in _cached_jsonl_rows(path):
         state = coach.apply_outcome(
             ledger, event_id=row.get("id"), topic=row.get("topic"),
             outcome=row.get("outcome"), now=_event_time(row.get("t")) or now)
