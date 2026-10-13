@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+from . import permissions
 from .agenda import Agenda
 from .decision_engine import DecisionEngine
 
@@ -248,6 +249,14 @@ def test_observed_clue_runs_silently_to_independently_verified_deliverable(tmp_p
     visual = Visual("screen", "unchanged", image.getvalue(), 20, 20, mime_type="image/jpeg")
     desktop = DesktopSession("Observe the user's context and decide whether help is useful", {}, visual=visual)
     desktop.agenda = Agenda(DecisionEngine(), tmp_path / "agenda.json")
+    # 这条用例考的是**续办生命周期**（目标登记 → 执行 → 独立读回 → done），
+    # 不是权限闸门。而 desktop_write_deliverable 是中风险，默认档要攒批等点头，
+    # 那会把执行推迟到批准之后，续办链路根本走不到。
+    # 所以这里显式把中风险设成 auto：闸门本身由 test_risk_tier*.py 单独钉住，
+    # 这里要的是一个不被打断的干净执行环境。测试名里的 silently 指
+    # 「不打扰用户」，而不是「绕过闸门」。
+    desktop.gate = permissions.Gate(policy=permissions.Policy(
+        low=permissions.Mode.AUTO, medium=permissions.Mode.AUTO, high=permissions.Mode.ASK))
     experiment = make_experiment(make_profile(), backend="claude", model="isolated", effort="low",
                                  revision="test", presentation={})
     runtime = TaskRuntime(desktop, experiment, artifact_dir=tmp_path / "artifacts")

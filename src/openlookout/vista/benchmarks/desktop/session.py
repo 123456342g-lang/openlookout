@@ -13,6 +13,7 @@ from vista.core.contracts import (
     EvidenceKind, Effect, Observation, ObservationBundle, PublicTask, SubmissionSpec, ToolBinding, ToolReply, Visual,
 )
 from . import actions
+from . import permissions
 from .agenda import Agenda
 from vista.core.json import thaw
 
@@ -50,6 +51,24 @@ class DesktopSession:
         self.closed = False
         self.evidence_revision = 0
         self._evidence_seen: set[str] = set()
+        self._gate: permissions.Gate | None = None
+
+    @property
+    def gate(self) -> permissions.Gate:
+        """风险闸门：每 session 一份，这样「同一轮攒一批」才有确定边界。
+
+        故意做成惰性属性而不是 ``__init__`` 里赋值：不少测试用
+        ``DesktopSession.__new__`` 造裸对象（不起模型、不截图），那条路径
+        不会跑 ``__init__``。闸门缺了会让这些用例在 ``_flush_risk_batches``
+        上炸 AttributeError，而不是安静地拿到一个默认闸门。
+        """
+        if getattr(self, "_gate", None) is None:
+            self._gate = permissions.Gate(policy=permissions.load_policy())
+        return self._gate
+
+    @gate.setter
+    def gate(self, value: permissions.Gate) -> None:
+        self._gate = value
 
     def _bundle(self, visual: Visual) -> ObservationBundle:
         """One new CURRENT observation with a unique identity. VISTA itself keeps every earlier
@@ -196,7 +215,25 @@ class DesktopSession:
                 offer["reply_to"] = d["reply_to"]
             publish(offer); record(dict(offer, result="shown"))
             self.reports.append(say)
+        self._flush_risk_batches()
         return ToolReply("已记录这一轮的决定。", boundary="decision_complete", event_text=f"decision:{d.get('kind')}")
+
+    def _flush_risk_batches(self) -> None:
+        """回合边界：把这一轮攒下的中风险批次变成**一条**提议。
+
+        放在 ``_companion`` 末尾是因为 companion 每轮必调（它决定开口说什么），
+        所以它就是「这一轮结束」的可靠边界。高风险不进 batches，因此这里发出的
+        每条提议都只含同档操作，不会把一次点头的范围悄悄放大。
+        """
+        for proposal in self.gate.flush():
+            items = proposal.get("items") or []
+            from sprite.proactive.help import OFFER_OPTIONS, publish, record
+            offer = {"id": f"risk-{time.time_ns()}", "t": time.time(),
+                     "text": proposal["text"], "topic": f"risk:{proposal.get('risk')}",
+                     "kind": "offer", "risk": proposal.get("risk"),
+                     "items": items, "options": list(OFFER_OPTIONS)}
+            publish(offer); record(dict(offer, result="shown"))
+            permissions.append_pending(proposal)
 
     def work_summary(self) -> dict:
         agenda = self.agenda
@@ -225,17 +262,34 @@ class DesktopSession:
         def run(arguments: Any) -> ToolReply:
             spec = actions.SPECS.get(name, (None, None))[1]
             read_only = spec is not None and spec.effect in {Effect.NONE, Effect.ANNOTATION}
-            claim = None
             agenda = getattr(self, "agenda", None)
+            if not read_only and name != "desktop_capture_evidence":
+                if agenda is None and self.actions >= actions.MAX_ACTIONS:
+                    return ToolReply(f"本次任务的操作次数已达上限（{actions.MAX_ACTIONS}）。", success=False)
+                # 预算在闸门**之前**扣：被闸门拦下的尝试同样占用一次机会，
+                # 否则模型可以对同一个高风险操作无限重试，闸门反倒成了漏洞。
+                self.actions += 1
+            # 风险闸门（2026-10-13）：只读与低风险直接做，中风险攒批，高风险每次单问。
+            # 放在分发处而不是提示词里 —— 上一轮 basic_shell 就是靠这里拦下的，
+            # 「请不要做」在模型面前没有强制力。
+            #
+            # 必须排在 agenda.claim **之前**：被闸门拦下的调用根本没发生，
+            # 如果先 claim 就留下一个永远不会 record 的悬空目标，
+            # 下一次 continuation_step 会一直重复追一个不存在的执行。
+            if not read_only:
+                verdict = self.gate.admit(name, arguments or {}, spec)
+                if not verdict.allow:
+                    # 拦下的调用不算成功改动，不进 action_results（那是给用户看的
+                    # 「到底动没动过机器」的账），但证据指纹要更新，模型才知道
+                    # 现场没变。
+                    self._record_evidence(name, ToolReply(verdict.reason, success=False))
+                    return ToolReply(verdict.reason, success=False)
+            claim = None
             if agenda is not None and name != "desktop_undo":
                 try:
                     claim = agenda.claim(name, arguments or {}, mutation=not read_only)
                 except ValueError as exc:
                     return ToolReply(str(exc), success=False)
-            if not read_only and name != "desktop_capture_evidence":
-                if agenda is None and self.actions >= actions.MAX_ACTIONS:
-                    return ToolReply(f"本次任务的操作次数已达上限（{actions.MAX_ACTIONS}）。", success=False)
-                self.actions += 1
             try:
                 if name == "desktop_capture_evidence":
                     reply = fn(arguments or {}, visual=self.current_visual)
