@@ -261,6 +261,27 @@ def queue_message(text: str) -> str:
     return ""
 
 
+def drop_dead_dialog(opened: dict) -> None:
+    """Forget the current dialog, closing it first if it is still alive.
+
+    ``opened["dlg"]`` is a live Tk reference, but the user can close the toplevel
+    at any moment (click ×, press Esc) while the offer thread is still writing to
+    the transcript. Touching that dead reference raises TclError, so every contact
+    goes through here: clear the entry **first**, then try to close, so a raising
+    ``close()`` can never leave a stale reference behind for the next tick.
+    """
+    dlg = opened.get("dlg")
+    if dlg is None:
+        return
+    opened["dlg"] = None
+    try:
+        dlg.close()
+    except Exception:
+        # Already destroyed / Tk gone. The reference is already dropped, which is
+        # the only thing the caller needed.
+        pass
+
+
 def run_gui() -> None:
     import tkinter as tk
     from ..gui import SpriteWindow, enable_dpi_awareness, W, H, SCALE
@@ -281,10 +302,7 @@ def run_gui() -> None:
         if (msg.get("kind") == "action"
                 or str(event_id or "").endswith(":started")
                 or str(event_id or "").endswith(":completed")):
-            dlg = opened.get("dlg")
-            if dlg is not None:
-                dlg.close()
-                opened["dlg"] = None
+            drop_dead_dialog(opened)
         w.show(msg, seconds)
         dlg = opened.get("dlg")
         if dlg is not None:
@@ -381,8 +399,7 @@ def run_gui() -> None:
             root.after(2000, tick)
 
     def open_dialog() -> None:
-        if opened["dlg"] is not None:
-            opened["dlg"].close()
+        drop_dead_dialog(opened)
         current = read_current() or {}
         about = current.get("activity", "")
         state = current.get("state", "")
