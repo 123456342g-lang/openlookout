@@ -103,7 +103,8 @@ def test_burstiness_clusters_quantiles_cv_histogram(perceive: Path) -> None:
 
 
 def test_burstiness_timestamp_sources_and_fallback(perceive: Path) -> None:
-    # a: offers join；b: 无 offers 但 t-latency 可重构；c: 只能退化用结果 t
+    # a: offers join；b: 无 offers 但 t-latency 可重构；
+    # c: join 缺失 + latency 缺失 → P2-2 起不再退化读结果 t，按疑似污染剔除
     outcomes = [
         orow("a", "ignored", D1 + 100.0, latency=100.0),
         orow("b", "ignored", D1 + 260.0, latency=180.0),
@@ -115,19 +116,20 @@ def test_burstiness_timestamp_sources_and_fallback(perceive: Path) -> None:
     rep = rm.summarize(perceive, timing_module=FakeTiming())
     burst = rep["burstiness"]
     assert burst["timestamp_sources"] == {
-        "offers_join": 1, "reconstructed_t_minus_latency": 1,
-        "result_t_fallback": 1}
-    # 重构出的 b 开口时刻 = 260-180 = D1+80；a 在 D1+0；c 退化在 D1+500
+        "offers_join": 1, "reconstructed_t_minus_latency": 1}
+    # 重构出的 b 开口时刻 = 260-180 = D1+80；a 在 D1+0
     joined = rm.opening_moments(outcomes, rm._index_offers(offers))
     by_id = {m["id"]: m for m in joined["moments"]}
     assert by_id["a"]["source"] == "offers_join"
     assert by_id["b"]["source"] == "reconstructed_t_minus_latency"
     assert by_id["b"]["ts"] == pytest.approx(D1 + 80.0)
-    assert by_id["c"]["source"] == "result_t_fallback"
-    assert by_id["c"]["ts"] == pytest.approx(D1 + 500.0)
-    assert burst["n_openings"] == 3
-    # 退化口径必须在 notes 里点名
-    assert any("结果落库时刻" in n for n in burst["notes"])
+    # c 不进序列，进污染清单并点名
+    assert "c" not in by_id
+    assert joined["polluted_n"] == 1
+    assert joined["polluted_rows"][0]["id"] == "c"
+    assert "latency_s 缺失" in joined["polluted_rows"][0]["reason"]
+    assert burst["n_openings"] == 2
+    assert any("污染" in n and "c" in n for n in burst["notes"])
 
 
 def _rows_of(directory: Path) -> list[dict]:
@@ -157,7 +159,9 @@ def test_burstiness_offer_t_preferred_and_reply_excluded(perceive: Path) -> None
     rep = rm.summarize(perceive, timing_module=FakeTiming())
     moments = rm.opening_moments(_rows_of(perceive), {})
     assert moments["excluded_reply_rows"] == 2
-    assert moments["reply_field_present"] is True
+    assert moments["excluded_reply_rows_outcomes"] == 2
+    assert moments["excluded_reply_rows_offers"] == 0
+    assert moments["reply_outcomes_present"] is True
     ids = [m["id"] for m in moments["moments"]]
     assert ids == ["p1", "p2"]
     assert all(m["source"] == "offer_t" for m in moments["moments"])
@@ -202,14 +206,15 @@ def test_anchor_missing_field_is_explicitly_not_computable(perceive: Path) -> No
     assert "0/13" in anchors["verdict"]
     md = rm.render_markdown(rep)
     assert "锚点字段缺失（①未落地）" in md
-    # 字段盘点也照实
-    assert rep["ledger_fields"]["anchor"]["rows_with_key"] == 0
-    assert rep["ledger_fields"]["offer_t"]["rows_with_key"] == 0
+    # 字段盘点也照实（按数据源分列：outcomes / offers）
+    assert rep["ledger_fields"]["outcomes"]["anchor"]["rows_with_key"] == 0
+    assert rep["ledger_fields"]["outcomes"]["offer_t"]["rows_with_key"] == 0
+    assert rep["ledger_fields"]["offers"]["anchor"]["rows_with_key"] == 0
 
 
 def test_anchor_rate_by_kind_when_field_present(perceive: Path) -> None:
     outcomes = []
-    for i in range(10):  # companion：8 带锚点，2 不带
+    for i in range(10):  # companion：8 带锚点，2 行字段缺失（①灰度历史行）
         extra = {"anchor": {"app": "chrome", "type": "focus", "title": "t"}} \
             if i < 8 else {}
         outcomes.append(orow(f"c{i}", "accepted", D1 + i, kind="companion",
@@ -218,20 +223,26 @@ def test_anchor_rate_by_kind_when_field_present(perceive: Path) -> None:
         outcomes.append(orow(f"f{i}", "accepted", D1 + 100 + i, kind="offer",
                              anchor={"app": "term", "type": "clipboard",
                                      "title": ""}))
-    # 空 dict 锚点算无锚点
+    # 空 dict 锚点 = 字段存在但确认为空（与「字段缺失」严格区分，P2-5）
     outcomes.append(orow("c-empty", "accepted", D1 + 200, kind="companion",
                          anchor={}))
     write_rows(perceive, "outcomes.jsonl", outcomes)
     rep = rm.summarize(perceive, timing_module=FakeTiming())
     anchors = rep["anchors"]
     assert anchors["computable"] is True
-    # companion 11 行（含空锚点 1 行）：3 行无锚点
+    # companion 11 行：8 有锚点、1 确认空、2 字段缺失；分母只数有字段的 9 行
     comp = anchors["by_kind"]["companion"]
-    assert comp["n"] == 11 and comp["anchored"] == 8 and comp["anchorless"] == 3
-    assert comp["anchorless_rate"] == pytest.approx(3 / 11)
+    assert comp["n"] == 11 and comp["with_field"] == 9
+    assert comp["anchored"] == 8 and comp["anchorless_confirmed"] == 1
+    assert comp["missing_field"] == 2
+    assert comp["coverage"] == pytest.approx(9 / 11)
+    assert comp["anchorless_rate"] == pytest.approx(1 / 9)
     offer = anchors["by_kind"]["offer"]
+    assert offer["with_field"] == 5 and offer["missing_field"] == 0
     assert offer["anchorless_rate"] == 0.0
-    assert anchors["anchorless_rate_overall"] == pytest.approx(3 / 16)
+    # 整体：确认空 1 / 有字段 14；字段缺失 2 行进覆盖率但不进占比
+    assert anchors["coverage"] == pytest.approx(14 / 16)
+    assert anchors["anchorless_rate_overall"] == pytest.approx(1 / 14)
 
 
 def test_anchor_empty_ledger_graceful(perceive: Path) -> None:

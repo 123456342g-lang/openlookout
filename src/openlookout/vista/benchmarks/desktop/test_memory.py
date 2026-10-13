@@ -43,6 +43,17 @@ def test_accepts_listed(tmp_path: Path):
     assert "接受过" in out and "清理内存" in out, out
 
 
+def test_single_accepted_is_listed_without_min_count(tmp_path: Path):
+    """P2-6：accepted 侧有意不设 MIN_COUNT（与 rejected 不对称，见 brief docstring）。
+
+    接住过一次的话题就值得记住；旧 offers 口径同样是 1 条即进【记忆】，不是回归。
+    """
+    now = time.time()
+    _outcome(tmp_path, "清理内存", "accepted", now - 60, oid="only-one")
+    out = brief(tmp_path, now)
+    assert "接受过" in out and "清理内存" in out, out
+
+
 def test_one_rejection_is_not_a_ban(tmp_path: Path):
     now = time.time()
     _outcome(tmp_path, "桌面归类", "rejected", now - 60)

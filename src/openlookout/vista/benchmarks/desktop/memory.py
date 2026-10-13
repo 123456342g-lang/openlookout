@@ -36,6 +36,11 @@ def brief(home: Path, now: float | None = None) -> str:
     读 outcomes.jsonl（一行一次开口的最终结果）：accepted 计「接受过」，
     rejected 计「拒绝过」且同 topic 需 ≥ MIN_COUNT 次才输出（一次手滑不拉黑）。
     没有数据 / 全部超出 7 天窗口 / 拒绝不足 MIN_COUNT 时返回空串——宁可安静。
+
+    两侧门槛**有意不对称**（审查 P2-6 确认保留旧口径，不是漏写）：
+    accepted 不设 MIN_COUNT——用户明确接住过一次的话题就值得记住，错记一条
+    「他接受过」的代价只是少打扰；rejected 要 ≥ MIN_COUNT——把一次手滑/误点
+    记成「别再提」会让模型永久绕开一个他其实可能要的话题，代价不对称。
     """
     now = now if now is not None else time.time()
     outcomes = Path(home) / "perceive" / "outcomes.jsonl"
@@ -46,6 +51,7 @@ def brief(home: Path, now: float | None = None) -> str:
         if now - t > RECENT_S: continue
         outcome, topic = r.get("outcome"), (r.get("topic") or "").strip()
         if not topic: continue
+        # accepted 有意不加 MIN_COUNT（见 docstring 的不对称说明，P2-6）
         if outcome == "accepted" and topic: acc[topic] = acc.get(topic, 0) + 1
         if outcome == "rejected" and topic:
             e = rej.setdefault(topic, dict(n=0, text=""))
