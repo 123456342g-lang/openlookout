@@ -11,12 +11,21 @@ from pathlib import Path
 
 from .perceive import DIR, NOW
 from .feedback import add_feedback
+from .help import OFFER_OPTIONS
 from . import conversation
 
 ROOT = Path(__file__).resolve().parents[2]                       # src/openlookout
+# 同意门（2026-10-13）：offer 是要动手改电脑的提议，**必须用户点头才执行**。
+# 这句话原本是「不等待用户确认」——offer 记录在 GUI tick 里被直接 auto_started，
+# 320 条 offers.jsonl 里 accepted/rejected 各 0 次、54 次 auto_started 就是这么来的，
+# 连 gui.py 里画「好的/不用」的分支都从没被走到过。
+# 改成必须点头之后，真正会改机器的动作只剩两条路，都留下了账：
+#   1) 用户点了「好的」→ run_offer（actions.py 每个工具都先写 undo 日志）；
+#   2) brain 自己的常驻观察循环（走 desktop_* 工具，不经过 offer）。
+# 代价见交付说明：brain 那条路本来就不经过 offer，同意门管不到它。
 OFFER_GOAL = ("小精灵已经决定主动替用户处理这件事：「{text}」。请你现在就自己判断怎么帮他做，用合适的办法。"
               "原则：不绕过安全检查，不删除文件，不结束用户正在用的程序；每个会改变电脑的操作，先记录撤回方法。"
-              "只做安全、可撤回的动作；不等待用户确认。做完用一句温和的话报告做了什么。")
+              "只做安全、可撤回的动作。做完用一句温和的话报告做了什么。")
 
 
 def _last_json(stdout: str) -> dict | None:
@@ -167,7 +176,19 @@ CHILDREN = {
 CHECK_S, SHOW_S = 2, 3600
 NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 OFFER_MAX_AGE_S = 180
+# 带选项的气泡停留时长（秒）。gui.show 对带 options 的气泡会自动 ×5，
+# 所以这里 120 实际给用户 600s 的决定时间——他不必守在屏幕前，但也在等一个答复。
+OFFER_ASK_S = 120
 CURRENT_MAX_AGE_S = 15
+
+# 这些状态说明这条 offer 已经有结论了，窗口重启后不许再拿它去问一次。
+# 旧的 auto_* 是同意门之前的历史词表，保留是为了让重启判断对老记录仍然成立。
+SETTLED_OFFER_STATES = frozenset({
+    "started", "expired", "accepted", "rejected", "dismissed", "retracted",
+    "auto_started", "auto_completed", "auto_failed", "auto_no_answer",
+    "auto_errored", "undone", "undo_requested", "ignored",
+    "acknowledged", "responded",
+})
 
 
 def log(msg: str) -> None:
@@ -315,7 +336,11 @@ def run_gui() -> None:
                 opened["dlg"] = None
 
     def on_choice(i, ok=False) -> None:
-        """记录用户的选择再关气泡。动作是否已自动启动与这里无关。"""
+        """用户对 offer 点了某个选项。**只有点了第一个（好的）才执行。**
+
+        旧版这里只记账、不启动执行——因为 tick 从来不等它，直接就 auto_started 了。
+        现在执行权就在这个回调里：offer 不再自动动手，点头是唯一的开关。
+        """
         offer = offer_state["offer"]
         if not offer:
             return
@@ -324,17 +349,47 @@ def run_gui() -> None:
             label = options[i] if 0 <= i < len(options) else None
             record_outcome(offer, "accepted" if i == 0 else "rejected",
                            options=options, choice_index=i, choice=label)
-        elif ok:
+            # 先收起带选项的气泡，再开始执行：start_offer 会 present 一条新气泡，
+            # 顺序反了会把「好，我开始处理…」一起收掉。
+            w.hide(expired=False)
+            if i == 0:
+                start_offer(offer)
+            return
+        if ok:
             record_outcome(offer, "acknowledged")
         w.hide(expired=False)
+
+    def start_offer(offer: dict) -> None:
+        """用户点了「好的」：现在才真的开始执行。"""
+        offer_state["running"] = offer.get("id")
+        record_offer_result(offer, "started")
+        label = offer.get("topic") or "这件事"
+        present(dict(kind="say", text=f"好，我开始处理{label}，完成后告诉你。"), 120,
+                event_id=f"{offer.get('id')}:started")
+
+        def report(msg: dict) -> None:
+            def deliver() -> None:
+                present(msg, 120, event_id=f"{offer.get('id')}:completed")
+                root.after(120000, lambda: offer_state.update(running=None))
+            root.after(0, deliver)
+        threading.Thread(target=run_offer, args=(offer, report), daemon=True).start()
 
     def on_expire() -> None:
         """气泡自己超时消失、用户全程没反应 —— 最常发生、也最该被记下来的情况。
 
-        记什么交给 expiry_outcome 判：真给过选项才算 ignored，没给选项只记 unanswered。
+        对 offer 来说这就是「没点头」：**不执行**。同时把 expired 写进 offers.jsonl，
+        否则窗口重启后 offer.json 还在、状态又还没落账，同一条提议会被重新弹一次
+        （offer_status 只认已落盘的结果行）。
+        记什么结果交给 expiry_outcome 判：真给过选项才算 ignored，没给选项只记 unanswered。
         """
         shown = offer_state.get("offer")
         record_outcome(shown, expiry_outcome(shown))
+        # 只在「还没点头」时作废。用户已经点了好的、动作正在跑（offer_state["running"]），
+        # 这时超时的是后续的进度气泡，不能给这条提议补一条 expired。
+        if (shown and str(shown.get("kind") or "") == "offer"
+                and not offer_state.get("running")
+                and offer_status(shown.get("id")) not in SETTLED_OFFER_STATES):
+            record_offer_result(shown, "expired")
 
     def on_undo(_aid) -> None:
         offer = offer_state.get("offer")
@@ -369,24 +424,15 @@ def run_gui() -> None:
                 if offer.get("kind") == "companion":
                     present(dict(kind="say", text=offer["text"], reply_to=offer.get("reply_to")),
                             180, event_id=str(offer.get("id") or ""))
-                else:
-                    status = offer_status(offer.get("id"))
-                    if status not in {
-                        "auto_started", "auto_completed", "auto_failed", "auto_no_answer",
-                        "auto_errored", "accepted", "undone", "undo_requested", "ignored",
-                        "acknowledged", "responded", "rejected",
-                    }:
-                        record_offer_result(offer, "auto_started")
-                        offer_state["running"] = offer.get("id")
-                        label = offer.get("topic") or "这件事"
-                        present(dict(kind="say", text=f"我已经开始处理{label}，完成后告诉你。"), 120,
-                                event_id=f"{offer.get('id')}:started")
-                        def report(msg: dict) -> None:
-                            def deliver() -> None:
-                                present(msg, 120, event_id=f"{offer.get('id')}:completed")
-                                root.after(120000, lambda: offer_state.update(running=None))
-                            root.after(0, deliver)
-                        threading.Thread(target=run_offer, args=(offer, report), daemon=True).start()
+                elif offer_status(offer.get("id")) not in SETTLED_OFFER_STATES:
+                    # 同意门：offer 到这里只是**把选项摆到用户面前**，不执行。
+                    # gui._buttons 见到 options 就会画出「好的/不用」，点击走 on_choice，
+                    # 只有选第一个才 start_offer。没人点 → on_expire → 到期作废。
+                    options = list(offer.get("options") or OFFER_OPTIONS)
+                    offer["options"] = options
+                    present(dict(kind="offer", text=offer["text"], options=options,
+                                 reply_to=offer.get("reply_to")),
+                            OFFER_ASK_S, event_id=str(offer.get("id") or ""))
             row = read_current()
             if row and not offer_state.get("running"):
                 # Keep current.json available to the feedback dialog, but do not
