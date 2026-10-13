@@ -884,3 +884,47 @@ def test_current_working_survives_long_guide_and_segment_update(dialogue, tmp_pa
         assert first_notes.index("[WORKING.md]") < first_notes.index("[GUIDE.md]")
     finally:
         runtime.close()
+
+
+# --- 不重复自己说过的话 ---------------------------------------------------
+#
+# 用户反馈："可能会一直说重复的事情"。病因不是模型笨，是它每轮都看不见自己
+# 上一轮说了什么——对话现场只附最近一轮，模型于是每轮都重新发现同一件事，
+# 把同一条结论换个说法再讲一遍。
+
+def test_sprite_sees_what_it_already_said(monkeypatch):
+    rows = [{"role": "assistant", "text": "实验7 报告可以对任务书交了", "kind": "say", "t": 100},
+            {"role": "user", "text": "嗯", "id": "ack", "t": 101}]
+    monkeypatch.setattr(conversation, "history", lambda limit=80: rows)
+    text = brain.conversation_fact(idle_s=0, now=102)
+    assert "我最近说过的话" in text
+    assert "实验7 报告可以对任务书交了" in text
+
+
+def test_own_words_survive_a_later_message_from_the_user(monkeypatch):
+    """最容易重复的时刻：用户回了个「嗯」之后。历史窗口会滚动，
+    但精灵自己说过什么必须一直在场，否则下一句必然是重复。"""
+    rows = [{"role": "assistant", "text": "早上那批哈希全对", "kind": "say", "t": 100},
+            {"role": "user", "text": "哦", "id": "m2", "t": 101},
+            {"role": "user", "text": "接着说", "id": "m3", "t": 102}]
+    monkeypatch.setattr(conversation, "history", lambda limit=80: rows)
+    text = brain.conversation_fact(idle_s=0, now=103)
+    assert "早上那批哈希全对" in text
+
+
+def test_reply_chatter_is_not_treated_as_something_it_said(monkeypatch):
+    """kind=reply 是回话轮的附带产物（常见是「收到，我记下了」这类占位）。
+    列进「我最近说过的话」等于主动提醒模型去重复它。"""
+    rows = [{"role": "user", "text": "理由是什么", "id": "q", "t": 100},
+            {"role": "assistant", "text": "收到，我记下了", "kind": "reply", "t": 101}]
+    monkeypatch.setattr(conversation, "history", lambda limit=80: rows)
+    text = brain.conversation_fact(idle_s=0, now=102)
+    own_block = text.split("【我最近说过的话】")[1].split("【待回应话轮")[0]
+    assert "收到，我记下了" not in own_block
+
+
+def test_first_ever_turn_says_so_instead_of_guessing(monkeypatch):
+    rows = [{"role": "user", "text": "在吗", "id": "hi", "t": 100}]
+    monkeypatch.setattr(conversation, "history", lambda limit=80: rows)
+    text = brain.conversation_fact(idle_s=0, now=102)
+    assert "第一次开口" in text

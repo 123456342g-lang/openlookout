@@ -48,3 +48,5 @@ src/openlookout/tmp_pytest_out.txt
 brain.py.broken-*
 brain.py.codex-*
 brain.py.work-*.bak
+# 含明文凭据的本地实验目录，非项目内容，绝不入库
+/netsec-lab/
