@@ -256,15 +256,57 @@ def test_trend_gives_verdict_only_with_enough_evidence(perceive: Path) -> None:
 
 # ── 7. 沉默明细 / 交叉核对 ──────────────────────────────────────────────────
 def test_silence_details_flag_bubble_timeout(perceive: Path) -> None:
+    """疑似超时按**该行自己的气泡寿命**判（PR #16 复审 P1-3）：
+    远超预算 → 是；远未到预算 → 否。"""
     write_rows(perceive, "outcomes.jsonl", [
         outcome_row(1, "ignored", t=D1, latency=181.3, text="清了 Temp：C 盘 1.96G→3.04G"),
-        outcome_row(2, "ignored", t=D1 + 1, latency=30.0, text="短静默"),
+        # companion 最短也有 30s 预算：5s 就落账不是气泡到点造成的
+        outcome_row(2, "ignored", t=D1 + 1, latency=5.0, text="短静默"),
     ])
     rep = reportmod.summarize(perceive, timing_module=FakeTiming())
     details = rep["silence_details"]
     assert [d["suspected_timeout"] for d in details] == [True, False]
     md = reportmod.render_markdown(rep)
     assert "清了 Temp" in md
+
+
+def test_silence_timeout_flag_uses_the_rows_own_bubble_budget(perceive: Path) -> None:
+    """新口径：companion 按句长 30~90s、带选项 offer 120s；同一 latency 对
+    长句是「还没到点」、对短句可能是「已到点」。阈值必须从 live 实挂常量
+    推导，不许再绑一个全局 170/180s。
+    """
+    from sprite.proactive import live
+
+    long_text = "很" * 600                       # bubble_seconds 触顶 90s
+    write_rows(perceive, "outcomes.jsonl", [
+        outcome_row(1, "unanswered", t=D1, latency=88.0, text=long_text),
+        outcome_row(2, "unanswered", t=D1 + 1, latency=40.0, text=long_text),
+        outcome_row(3, "ignored", t=D1 + 2, kind="offer", latency=119.0,
+                    text="要我清一下 C 盘吗？", options=["好的", "不用"]),
+        outcome_row(4, "ignored", t=D1 + 3, kind="offer", latency=60.0,
+                    text="另一个提议？", options=["好的", "不用"]),
+    ])
+    rep = reportmod.summarize(perceive, timing_module=FakeTiming())
+    details = {d["id"]: d for d in rep["silence_details"]}
+    assert details["o1"]["bubble_budget_s"] == pytest.approx(live.bubble_seconds(long_text))
+    assert details["o3"]["bubble_budget_s"] == pytest.approx(live.OFFER_ASK_S * 2)
+    assert details["o1"]["suspected_timeout"] is True
+    assert details["o2"]["suspected_timeout"] is False
+    assert details["o3"]["suspected_timeout"] is True
+    assert details["o4"]["suspected_timeout"] is False
+
+
+def test_stale_170s_constant_is_gone_and_report_uses_new_wording(perceive: Path) -> None:
+    """旧 SILENCE_HINT_S=170（绑 180s 气泡）删除即不许复活；报告文案对齐
+    30~90s/120s 新口径。"""
+    assert not hasattr(reportmod, "SILENCE_HINT_S")
+    write_rows(perceive, "outcomes.jsonl", [
+        outcome_row(1, "ignored", t=D1, latency=31.0, text="一句短话。")])
+    md = reportmod.render_markdown(
+        reportmod.summarize(perceive, timing_module=FakeTiming()))
+    assert "30~90s" in md and "120s" in md
+    assert "companion 气泡上限 180s" not in md
+    assert "来不及回应" not in md
 
 
 def test_late_user_reply_after_silence_is_surfaced(perceive: Path) -> None:

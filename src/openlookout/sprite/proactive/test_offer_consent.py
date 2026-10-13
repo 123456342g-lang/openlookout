@@ -48,7 +48,12 @@ def test_gui_renders_offer_options_as_choice_buttons():
 
 
 def test_gui_gives_options_bubble_five_times_the_wait():
-    """带选项 = 要人做决定，多留一会儿（gui.show 的 ×5）。"""
+    """带选项 = 要人做决定，多留一会儿。
+
+    PR #16 后的实挂口径是 live.OFFER_ASK_S×2=120s（gui.show 的系数已从
+    ×5 收为 ×2，见 issue #11 新发现 2）；本用例只钉 show 对 options 有
+    特殊时长分支，120s 算式由 test_bubble_and_loop 钉死。
+    """
     assert "options" in inspect.getsource(SpriteWindow.show)
 
 

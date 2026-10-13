@@ -13,6 +13,7 @@ from __future__ import annotations
 import ast
 import inspect
 import os
+import time
 
 from sprite.proactive import live as live_mod
 
@@ -73,12 +74,19 @@ def test_stamp_is_stable_when_nothing_changes():
 
 
 def test_stamp_moves_when_a_watched_file_is_touched():
-    """正向验证 stamp 机制本身是活的（这里动的是 sprite/proactive/live.py）。"""
+    """正向验证 stamp 机制本身是活的（这里动的是 sprite/proactive/live.py）。
+
+    触摸点必须相对**当前 stamp 的最大值**取未来，而不是 live.py 自己的
+    mtime +3600：刚提交后 brain.py/profiles.py 可能比 live.py 新不到一小时，
+    旧写法把 live.py 拨快一小时仍被更新的文件掩盖，于是「刚改完代码就跑
+    测试」必挂（10-13 实测）。
+    """
     target = live_mod.PKG / "live.py"
     original = target.stat().st_mtime
     before = live_mod.brain_stamp()
+    future = max(time.time(), before) + 3600
     try:
-        os.utime(target, (original + 3600, original + 3600))
+        os.utime(target, (future, future))
         after = live_mod.brain_stamp()
     finally:
         os.utime(target, (original, original))

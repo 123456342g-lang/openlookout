@@ -23,8 +23,8 @@ SOURCE = pathlib.Path(brain.__file__)
 # Names the step loop dereferences on every single iteration.  If one of these
 # is missing the loop raises NameError and the process dies mid-run, so they
 # are the ones worth pinning.
-RUNTIME_CONSTANTS = ("MIN_GAP_S", "HEARTBEAT_S", "PREP_EVERY_TURNS",
-                     "CHANGE_MIN", "ACTIVE_MODEL")
+RUNTIME_CONSTANTS = ("MIN_GAP_S", "HEARTBEAT_S", "VISUAL_RECHECK_S",
+                     "PREP_EVERY_TURNS", "CHANGE_MIN", "ACTIVE_MODEL")
 
 
 def _module_source() -> str:

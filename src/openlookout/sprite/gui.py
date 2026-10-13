@@ -180,7 +180,7 @@ class SpriteWindow:
     def set_state(self, s):
         if s != self.state: self.state = s; self.redraw()
 
-    def show(self, msg: dict, seconds: int):
+    def show(self, msg: dict, seconds: float):
         self.msg = msg
         try:
             self.win.deiconify()
@@ -189,8 +189,10 @@ class SpriteWindow:
             pass
         self.redraw()
         if self.hide_job: self.win.after_cancel(self.hide_job)
-        wait = seconds * (5 if msg.get("options") else 1)      # 带选项的话多留一会儿
-        self.hide_job = self.win.after(wait * 1000, lambda: self.hide(expired=True))
+        # 带选项的（要用户点头）才多留一会儿。这里原来写死 ×5，
+        # 结果一句短提示也在屏幕上挂十几分钟。真正需要决定时间的只有 offer。
+        wait = seconds * (2 if msg.get("options") else 1)
+        self.hide_job = self.win.after(max(1000, int(wait * 1000)), lambda: self.hide(expired=True))
 
     def hide(self, expired=False):
         if self.msg and expired: self.on_expire()
