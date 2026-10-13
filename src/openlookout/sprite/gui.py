@@ -18,7 +18,13 @@ from pathlib import Path
 from .pixels import render, W, H
 
 SCALE = 5
-FONT = ("Microsoft YaHei", 10)
+# 字号要跟得上精灵的放大倍数。SCALE=5 时精灵本体有 W*5 像素高，气泡里的字如果
+# 还是 10 号，在 5 倍缩放比例下看起来就像蚂蚁——用户反馈"对话框字很小"就是这个。
+# 14 号配合下面的 BUBBLE_WR 让气泡正文有足够行宽，不会挤成一列。
+FONT = ("Microsoft YaHei", 14)
+# 气泡正文宽度：不给固定像素，按精灵宽度推一个下限。这样调SCALE 或换屏幕时
+# 气泡跟着走，不会出现"精灵很大、气泡很窄"的失衡。
+BUBBLE_WR = max(300, W * SCALE // 2)
 BG, EDGE, TXT, BTN, BTN_TXT = "#ffffff", "#12353a", "#12353a", "#d6f5f8", "#12353a"
 PAD, TAIL = 10, 9
 
@@ -205,7 +211,8 @@ class SpriteWindow:
         total_w, left_pad, top_pad = sw + 6, 0, 6
         geo = None
         if self.msg:
-            tid = c.create_text(0, 0, text=self.msg["text"], font=self.font, width=210, anchor="nw")
+            tid = c.create_text(0, 0, text=self.msg["text"], font=self.font,
+                                width=BUBBLE_WR, anchor="nw")
             bb = c.bbox(tid); c.delete(tid)
             btns = self._buttons()
             bw = sum(self.font.measure(t) + 20 for t, _ in btns) + 6 * max(0, len(btns) - 1)
@@ -227,7 +234,8 @@ class SpriteWindow:
             # 盖住尾巴与气泡接缝处的描边
             bx = ox + (geo["tail"][0][0])
             c.create_line(bx, oy + geo["tail"][0][1] + 2, bx, oy + geo["tail"][1][1] - 2, fill=BG, width=3)
-            c.create_text(sx, oy + y0 + PAD, text=self.msg["text"], font=self.font, width=210, anchor="nw", fill=TXT)
+            c.create_text(sx, oy + y0 + PAD, text=self.msg["text"], font=self.font,
+                              width=BUBBLE_WR, anchor="nw", fill=TXT)
             bx0 = sx; by = oy + y1 - PAD - 18
             for t_, act in self._buttons():
                 w = self.font.measure(t_) + 20
