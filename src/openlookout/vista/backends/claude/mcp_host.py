@@ -171,13 +171,7 @@ class ClaudeGameMcpHost:
             raise PermissionError("Unauthorized controller request.")
         method = request.get("method")
         if method == "tools/list":
-            definitions = (
-                self.tool_interface.definitions
-                if self.tool_interface is not None
-                else self.tool_definitions
-                if self.tool_definitions is not None
-                else self._default_tool_definitions()
-            )
+            definitions = self._advertised_definitions()
             response = {
                 "result": {
                     "tools": [
@@ -213,6 +207,14 @@ class ClaudeGameMcpHost:
                 and not self.include_compact_checkpoint
             ):
                 raise ValueError("Unknown tool.")
+            # 服务端成员校验（issue #13 PR1，review P1-2）：收口不能只依赖
+            # claude 客户端不路由未广告工具——实测某些版本对「已启用但未授权」
+            # 的工具并不拦截。名字不在本次 tools/list 广告面内，直接在分发前
+            # JSON-RPC 拒绝，dispatcher 完全不被触达。
+            if name not in self._advertised_tool_names():
+                raise PermissionError(
+                    f"Tool {name!r} is not advertised by this MCP session."
+                )
             controller_call_id = str(request_id)
             if self.call_namespace:
                 controller_call_id = f"{self.call_namespace}:{controller_call_id}"
@@ -236,6 +238,28 @@ class ClaudeGameMcpHost:
             self.boundary_delivered.set()
             return {"result": {"acknowledged": True}}
         raise ValueError("Unknown bridge method.")
+
+    def _advertised_definitions(self) -> tuple[dict[str, Any], ...] | list[dict[str, Any]]:
+        """Definitions served by tools/list for this session (the filtered face)."""
+
+        if self.tool_interface is not None:
+            return self.tool_interface.definitions
+        if self.tool_definitions is not None:
+            return self.tool_definitions
+        return self._default_tool_definitions()
+
+    def _advertised_tool_names(self) -> set[str]:
+        """Names this session actually advertises.
+
+        Fail-closed: if neither a tool interface nor explicit definitions were
+        supplied, no call can pass the membership check.
+        """
+
+        if self.tool_interface is not None:
+            return {tool["name"] for tool in self.tool_interface.definitions}
+        if self.tool_definitions is not None:
+            return {tool["name"] for tool in self.tool_definitions}
+        return set()
 
     def _default_tool_definitions(self) -> tuple[dict[str, Any], ...]:
         raise RuntimeError("Task tools must be supplied by the adapter")
