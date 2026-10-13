@@ -193,6 +193,7 @@ class ToolSpec:
     costs: Mapping[str, int] = field(default_factory=dict)
     dispatch_invalid: bool = False
     annotations: Mapping[str, bool] | None = None
+    investigation: bool = False
 
     def __post_init__(self) -> None:
         if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", self.name):
@@ -213,6 +214,8 @@ class ToolSpec:
             self.dispatch_invalid and self.capability != Capability.ACTION
         ):
             raise ValueError("Only action tools may delegate invalid-output handling")
+        if type(self.investigation) is not bool:
+            raise ValueError("investigation must be a bool")
         for name, cost in self.costs.items():
             if (
                 not name
