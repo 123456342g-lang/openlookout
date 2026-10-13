@@ -70,7 +70,9 @@ def detect_copy_paste_friction(evs, meta, assembly_outputs=()):
         if e["type"] != "clipboard": continue
         if any(Path(o).name in (e.get("dst_title") or "") for o in assembly_outputs):
             continue  # 已经算进"周期性拼文件"里了
-        key = (e["src_app"], norm_title(e["src_title"]), e["dst_app"], norm_title(e["dst_title"]))
+        if not e.get("src_app") or not e.get("dst_app"):
+            continue
+        key = (e["src_app"], norm_title(e.get("src_title")), e["dst_app"], norm_title(e.get("dst_title")))
         pairs[key].append(e)
     out = []
     for (sa, st, da, dt_), lst in pairs.items():
@@ -389,6 +391,7 @@ def detect_cross_app_paste(evs, meta):
     pairs = defaultdict(list)
     for e in evs:
         if e["type"] != "clipboard": continue
+        if not e.get("src_app") or not e.get("dst_app"): continue
         if e["src_app"] == e["dst_app"]: continue
         if e["src_app"] in ("werfault", "searchapp") or e["dst_app"] in ("werfault", "searchapp"): continue
         pairs[(e["src_app"], e["dst_app"])].append(e)

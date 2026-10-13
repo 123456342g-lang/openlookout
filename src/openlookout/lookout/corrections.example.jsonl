@@ -1,0 +1,2 @@
+{"ts":"2026-10-01T10:00:00","scope":"my-project","instruction":"先检查项目规则，运行相关测试，不要修改原始数据","source":"agent-session"}
+{"ts":"2026-10-03T15:30:00","scope":"my-project","instruction":"先检查项目规则，运行相关测试，不要修改原始数据。","source":"agent-session"}

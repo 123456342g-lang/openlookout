@@ -1,0 +1,5 @@
+{
+  "protocol": "anthropic",
+  "base_url": "https://your-provider.example.com/anthropic",
+  "model": "your-model-name"
+}

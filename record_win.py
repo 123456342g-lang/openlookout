@@ -1,6 +1,6 @@
 """OpenLookout 真实记录器（Python 原型，Windows 10/11）。
 输出格式与 capture/events.jsonl、recorder/record.py 相同。只用 Python 标准库（ctypes 调 Win32），
-不截图，不记键盘。
+不截图，不记键盘。浏览器扩展可上报 nav / url / browser_error（见 recorder_ext/）；常驻截图循环禁止。
 
 用法（PowerShell）：
   python record_win.py --watch "$HOME\\Documents" --watch "$HOME\\Downloads" --seconds 600
@@ -8,32 +8,37 @@
 """
 import argparse, ctypes, hashlib, http.server, json, os, sys, threading, time
 from ctypes import wintypes as W
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 from pathlib import Path
 
-if sys.platform != "win32":
-    sys.exit("这个脚本只能在 Windows 上运行；Linux 请用 recorder/record.py")
+# WIN32-ONLY runtime: Win32 ctypes bind below. Importing on Linux is OK for
+# static review / helper tests; calling main() or using user32 will fail.
+_WIN32 = sys.platform == "win32"
+if not _WIN32 and __name__ == "__main__":
+    sys.exit("这个脚本只能在 Windows 上运行；Linux 请用 recorder/record.py；浏览失败契约见 observe/")
 
-TZ = timezone(timedelta(hours=8))
-def now_ts(): return datetime.now(TZ).strftime("%Y-%m-%dT%H:%M:%S+08:00")
+def now_ts(): return datetime.now().astimezone().isoformat(timespec="seconds")
 
-user32 = ctypes.WinDLL("user32", use_last_error=True)
-kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-user32.GetForegroundWindow.restype = W.HWND
-user32.GetWindowTextLengthW.argtypes = [W.HWND]
-user32.GetWindowTextW.argtypes = [W.HWND, W.LPWSTR, ctypes.c_int]
-user32.GetWindowThreadProcessId.argtypes = [W.HWND, ctypes.POINTER(W.DWORD)]
-user32.GetClipboardSequenceNumber.restype = W.DWORD
-user32.OpenClipboard.argtypes = [W.HWND]
-user32.GetClipboardData.restype = W.HANDLE
-user32.GetClipboardData.argtypes = [W.UINT]
-kernel32.OpenProcess.restype = W.HANDLE
-kernel32.OpenProcess.argtypes = [W.DWORD, W.BOOL, W.DWORD]
-kernel32.QueryFullProcessImageNameW.argtypes = [W.HANDLE, W.DWORD, W.LPWSTR, ctypes.POINTER(W.DWORD)]
-kernel32.CloseHandle.argtypes = [W.HANDLE]
-kernel32.GlobalLock.restype = ctypes.c_void_p
-kernel32.GlobalLock.argtypes = [W.HGLOBAL]
-kernel32.GlobalUnlock.argtypes = [W.HGLOBAL]
+user32 = kernel32 = None
+if _WIN32:
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+if _WIN32 and user32 is not None:
+    user32.GetForegroundWindow.restype = W.HWND
+    user32.GetWindowTextLengthW.argtypes = [W.HWND]
+    user32.GetWindowTextW.argtypes = [W.HWND, W.LPWSTR, ctypes.c_int]
+    user32.GetWindowThreadProcessId.argtypes = [W.HWND, ctypes.POINTER(W.DWORD)]
+    user32.GetClipboardSequenceNumber.restype = W.DWORD
+    user32.OpenClipboard.argtypes = [W.HWND]
+    user32.GetClipboardData.restype = W.HANDLE
+    user32.GetClipboardData.argtypes = [W.UINT]
+    kernel32.OpenProcess.restype = W.HANDLE
+    kernel32.OpenProcess.argtypes = [W.DWORD, W.BOOL, W.DWORD]
+    kernel32.QueryFullProcessImageNameW.argtypes = [W.HANDLE, W.DWORD, W.LPWSTR, ctypes.POINTER(W.DWORD)]
+    kernel32.CloseHandle.argtypes = [W.HANDLE]
+    kernel32.GlobalLock.restype = ctypes.c_void_p
+    kernel32.GlobalLock.argtypes = [W.HGLOBAL]
+    kernel32.GlobalUnlock.argtypes = [W.HGLOBAL]
 
 # 进程名 -> 与 Linux 版一致的 app 名，方便分析侧同一套规则
 APP_ALIAS = {
@@ -124,12 +129,29 @@ def start_ext_server(port, st):
             self.send_response(204); self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Access-Control-Allow-Headers", "Content-Type"); self.end_headers()
         def do_POST(self):
+            # Accept url / nav / browser_error / form_edit (see observe/browser_ingest.py + recorder_ext).
             try: ev = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
             except Exception: ev = {}
+            kind = (ev.get("kind") or ev.get("type") or "").lower()
             with st.lock:
-                if ev.get("kind") == "url" and ev.get("url"):
+                if kind in ("url", "nav") and ev.get("url"):
                     st.url_by_title[ev.get("title", "")] = ev["url"]; st.last_url = ev["url"]
-                elif ev.get("kind") == "form_edit":
+                    # Emit typed event so sprite can see navigations without waiting for focus rotate
+                    st.queue.append(dict(ts=now_ts(), _emit_type=kind if kind != "url" else "url",
+                                         url=ev.get("url"), title=ev.get("title"),
+                                         tab_id=ev.get("tab_id") or ev.get("tabId"),
+                                         transition=ev.get("transition")))
+                elif kind in ("browser_error", "error", "webnav_error", "load_error"):
+                    if ev.get("url"):
+                        st.last_url = ev["url"]
+                    code = ev.get("error") or ev.get("code") or ev.get("error_code") or "ERR_FAILED"
+                    if isinstance(code, str) and code.lower().startswith("net::"):
+                        code = code[5:]
+                    st.queue.append(dict(ts=now_ts(), _emit_type="browser_error",
+                                         url=ev.get("url"), title=ev.get("title"),
+                                         error=code, message=ev.get("message") or ev.get("phrase"),
+                                         tab_id=ev.get("tab_id") or ev.get("tabId")))
+                elif kind == "form_edit":
                     st.queue.append(dict(ts=now_ts(), url=ev.get("url"), field_label=ev.get("field_label"), via=ev.get("via")))
             self.send_response(204); self.send_header("Access-Control-Allow-Origin", "*"); self.end_headers()
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), H)
@@ -151,7 +173,16 @@ def main():
     ap.add_argument("--poll", type=float, default=0.5)
     ap.add_argument("--ext-port", type=int, default=8765, help="浏览器扩展上报端口，0 表示关闭")
     ap.add_argument("--seconds", type=float, default=0, help="跑多久后退出，0 表示一直跑")
+    ap.add_argument("--stop-file", type=Path)
+    ap.add_argument("--parent-pid", type=int)
+    ap.add_argument("--heartbeat", type=float, default=0)
+    ap.add_argument("--ignore-title", action="append", default=[])
     a = ap.parse_args()
+    parent_handle = kernel32.OpenProcess(0x00100000, False, a.parent_pid) if a.parent_pid else None
+    if a.parent_pid and not parent_handle:
+        raise RuntimeError("无法监测父进程")
+    kernel32.WaitForSingleObject.argtypes = [W.HANDLE, W.DWORD]
+    kernel32.WaitForSingleObject.restype = W.DWORD
     if not a.watch: a.watch = [str(Path.home() / "Documents"), str(Path.home() / "Desktop"), str(Path.home() / "Downloads")]
     out = Path(a.out); out.parent.mkdir(parents=True, exist_ok=True)
     f = open(out, "a", encoding="utf-8"); flock = threading.Lock()
@@ -185,16 +216,31 @@ def main():
     recent_seen = {}
     t0 = time.time()
     while not a.seconds or time.time() - t0 < a.seconds:
+        if a.stop_file and a.stop_file.exists():
+            break
+        if parent_handle and kernel32.WaitForSingleObject(parent_handle, 0) != 258:
+            break
         try: w = active_window()
         except Exception: w = cur
+        if w and any(w[1].startswith(title) for title in a.ignore_title):
+            w = None
         if w != cur:
             if cur and cur_t and (cur[1] or time.time() - cur_t >= 1):
                 emit("focus", cur_ts, app=cur[0], title=cur[1], url=url_for(st, cur[0], cur[1]), dur_s=int(time.time() - cur_t))
             if pending_clip and w:           # 复制后切到的第一个其他窗口，记为粘贴目标
                 pending_clip.update(dst_app=w[0], dst_title=w[1]); emit("clipboard", **pending_clip); pending_clip = None
             cur, cur_ts, cur_t = w, now_ts(), time.time()
+        elif cur and a.heartbeat > 0 and time.time() - cur_t >= a.heartbeat:
+            emit("focus", cur_ts, app=cur[0], title=cur[1], url=url_for(st, cur[0], cur[1]), dur_s=int(time.time() - cur_t))
+            cur_ts, cur_t = now_ts(), time.time()
         with st.lock: q, st.queue = st.queue, []; fs, st.files = st.files, []
-        for fe in q: emit("form_edit", fe.pop("ts"), app=cur[0] if cur else None, **fe)
+        for fe in q:
+            ts = fe.pop("ts", None)
+            et = fe.pop("_emit_type", None)
+            if et in ("nav", "url", "browser_error"):
+                emit(et, ts, app=cur[0] if cur else None, **{k: v for k, v in fe.items() if v is not None})
+            else:
+                emit("form_edit", ts, app=cur[0] if cur else None, **fe)
         seq = user32.GetClipboardSequenceNumber()
         if seq != last_seq:
             last_seq = seq; c = clipboard_text()
@@ -213,6 +259,9 @@ def main():
         time.sleep(a.poll)
     if cur and cur_t: emit("focus", cur_ts, app=cur[0], title=cur[1], url=url_for(st, cur[0], cur[1]), dur_s=int(time.time() - cur_t))
     if pending_clip: emit("clipboard", **pending_clip)
+    if parent_handle:
+        kernel32.CloseHandle(parent_handle)
+    f.close()
     print(f"已结束，事件在 {out}", file=sys.stderr)
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@
 
 **这是真的**：真实的内存探针（psutil/ctypes）、真实的内存告警阈值、真实的进程挂起（`NtSuspendProcess`，**只挂起、从不结束**），走真实的 GUI。
 文件清理**只发生在沙箱** `E:\OpenLookout\sprite_sandbox\demo`（默认；除非你在 `demo_live.json` 里明确列出别的缓存目录）。
-**真实 Windows 已验证**（2026-10-10，Windows + Python 3.11）：真实探针读到 251~254 个进程/内存/前台窗口；真实压力（可用 2.8GB < 阈值 3.1GB）下精灵自动隔离沙箱内 14 个有硬证据的文件并一行汇报、高风险/无证据项全部跳过不误动；14/14 撤销还原、11 个陷阱文件逐字节不变；`WinBackend` 真实挂起/恢复自产测试进程（journal 写入→清空）。
+**尚未在真实 Windows 上验证过**——所以先干跑，再 `--live`。
 
 ## 0. 准备（一次）
 1. Python 3.10+（`python --version`），自带 tkinter。
@@ -46,7 +46,7 @@
 | `stage_demo.py [--root DIR] [--reset] [--check]` | 铺沙箱 / 检查陷阱是否逐字节不变 |
 
 ## 6. 诚实的说明
-- **真实 Windows 已验证**（2026-10-10，Windows + Python 3.11.9 + psutil 7.2.2）：`dry_run_processes` 真实列出 251 进程/前台识别/12 个最大进程的拒绝理由（0 误判）；`live --no-gui` 干跑模式下真实压力（可用 2.8GB < 3.1GB 阈值）自动隔离沙箱 14 个有硬证据的文件（有副本大旧文件/超一天临时文件/浏览器缓存/旧安装包/包管理器缓存），高风险与无证据项全部跳过；一行汇报「清了 14 个缓存，可还原」；`stage_demo.check` 撤销后 all_restored=True、11 陷阱逐字节不变；`WinBackend` 对自产测试进程真实 `NtSuspendProcess`/`NtResumeProcess` 成功（journal 先写后清）。未覆盖：真实 GUI 冒泡截图（T3 已验证 GUI 本身）、200%+ 缩放（无硬件）。
+- **没在真实 Windows 上跑过**：`WinProbe`（窗口/前台/空闲）、`NtSuspendProcess`、`EmptyWorkingSet`、GUI 透明色在 Windows 上的表现都只有代码和 mock 测试。出问题看 `E:\OpenLookout\sprite_home\demo_live.log`。
 - 为了演示，把“空闲 15/30 分钟”缩成约 1/2 分钟（`PROC_IDLE_SCALE=0.07`）、把“大文件”门槛从 500MB 降到 20MB；文件清理平时由磁盘压力触发，演示里绑在同一次内存告警上，方便一次触发看全流程。
 - 浏览器后台标签是否算“空闲”取决于 CPU；没装 pycaw 时无法确认是否在出声（所以门槛翻倍），**别在 --live 演示时开着正在播放的标签**。
 - 沙箱约占 280MB 磁盘；整个目录可随时删除。

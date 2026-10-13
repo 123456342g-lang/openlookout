@@ -1,0 +1,11 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "autoupdate": false,
+  "mcp": {
+    "sprite-eyes": {
+      "type": "local",
+      "command": ["D:/python3.11/python.exe", "E:/OpenLookout/src/openlookout/sprite/proactive/probe/eyes_probe.py"],
+      "enabled": true
+    }
+  }
+}

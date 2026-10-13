@@ -1,0 +1,39 @@
+{
+  "experiment": "exp_progress",
+  "client": "FakeNovelClient",
+  "n": 24,
+  "labels": [
+    "progress",
+    "stuck",
+    "error"
+  ],
+  "needs_help": {
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1": 1.0,
+    "tp": 16,
+    "tn": 8,
+    "fp": 0,
+    "fn": 0
+  },
+  "confusion_matrix": {
+    "order": "[[tn,fp],[fn,tp]] rows=gold_help cols=pred_help",
+    "matrix": [
+      [
+        8,
+        0
+      ],
+      [
+        0,
+        16
+      ]
+    ]
+  },
+  "by_gold_label": {
+    "error|pred_help=1": 8,
+    "progress|pred_help=0": 8,
+    "stuck|pred_help=1": 8
+  },
+  "prefer_novel_default": true,
+  "network_discoverer_used": false
+}

@@ -175,7 +175,13 @@ class SpriteWindow:
         if s != self.state: self.state = s; self.redraw()
 
     def show(self, msg: dict, seconds: int):
-        self.msg = msg; self.redraw()
+        self.msg = msg
+        try:
+            self.win.deiconify()
+            self.win.lift()
+        except Exception:
+            pass
+        self.redraw()
         if self.hide_job: self.win.after_cancel(self.hide_job)
         wait = seconds * (5 if msg.get("options") else 1)      # 带选项的话多留一会儿
         self.hide_job = self.win.after(wait * 1000, lambda: self.hide(expired=True))
@@ -265,7 +271,18 @@ def run_gui(sprite, seconds: int, poll_s: float, should_quit=None):
     import tkinter as tk
     enable_dpi_awareness()
     q: queue.Queue = queue.Queue()
-    sprite.on_message = lambda m: q.put(m) if m.get("kind") == "say" else None
+    sprite.on_message = lambda m: q.put(m) if m.get("kind") in ("say", "action") else None
+    # 启动时把最近未展示过的 action 再冒一次泡，避免「做完了但窗口当时不在/被决策压住」
+    try:
+        import json as _json
+        _mf = Path(sprite.home) / "messages.jsonl"
+        if _mf.exists():
+            _rows = [_json.loads(L) for L in _mf.read_text(encoding="utf-8").splitlines() if L.strip()]
+            for _m in _rows[-8:]:
+                if _m.get("kind") == "action" and _m.get("status") == "done":
+                    q.put(_m)
+    except Exception:
+        pass
     root = tk.Tk(); root.withdraw()
     def on_choice(i, ok=False): sprite.respond(i if not ok else 0)
     w = SpriteWindow(root, sprite.home, on_choice, lambda aid: (sprite.undo(aid), sprite.respond(0)), lambda: sprite.respond(None, kind="ignore"))

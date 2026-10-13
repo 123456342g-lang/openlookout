@@ -18,3 +18,30 @@ venv/
 *.key
 .DS_Store
 Thumbs.db
+.venv312/
+sprite_home/
+src/openlookout/sprite/proactive/provider.json
+agents/.locks.json
+
+# —— 2026-10-13 收编进 GitHub 前的整理（不删盘上文件，仅不入库）——
+.codebuddy/
+.omx/
+.tmp/
+tmp/
+tmp_*
+_bak_*/
+*.zip
+lab3work/
+sprite_sandbox/
+third_party/
+# 根目录 Scratch 文档/演示产物
+FINAL_DEMO.md
+FINAL_VISIBLE.json
+MERGE_STAMP.json
+OBSERVE_PLAN.md
+README_BOX.md
+final_demo_sprite_bubble.png
+# src 内 Scratch
+src/openlookout/trigger.log
+src/openlookout/tmp_pytest_out.txt
+/sprite/

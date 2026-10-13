@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "OpenLookout 记录器",
+  "version": "0.2.0",
+  "description": "上报 url/nav/browser_error/表单字段名到本机 OpenLookout 记录器（不截图、不记键盘内容）。",
+  "permissions": [
+    "tabs",
+    "webNavigation"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:8765/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*",
+        "file:///*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ]
+}

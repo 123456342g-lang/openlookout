@@ -39,3 +39,28 @@ python3 -m lookout.v1 --capture <backfill目录> --out <输出目录> --no-llm
 ## 依赖
 
 Python 3、openpyxl；可选：LibreOffice（表格公式重算）、google-chrome（截图）、bubblewrap（沙箱）。云端模型任意 OpenAI 兼容接口（V1 可用 `--no-llm`）。
+
+## 持续辅助 + 岔路实验
+
+`lookout.trajectory` 是一个窄原型：把重复的 Agent 纠正沉淀成辅助规则；只有个人行为与已核对的外部变化交汇时，才提出一条岔路。统计、证据和去重在本地完成；模型只做可选的证据审查。
+
+```bash
+python -m lookout.trajectory --capture ../../data/backfill --out runs/trajectory \
+  --corrections lookout/corrections.example.jsonl
+
+python -m lookout.trajectory --capture ../../data/backfill --out runs/trajectory_mimo \
+  --corrections lookout/corrections.example.jsonl --review-model mimo-v2.6-flash
+```
+
+输出 `trajectory.md`、`trajectory.json` 和 `trajectory_state.json`。`corrections.example.jsonl` 只是格式示例；原始行为数据、运行结果和模型配置不进入 Git。
+
+## 桌面精灵实验
+
+Windows 上可以启动一个常驻桌面精灵。它持续观察窗口、文件变化和剪贴板摘要，在完成、卡住、来回切换或发现高置信度线索时主动弹出独立的云彩对话框。精灵本体始终留在桌面；点击它只会打开对话框，输入后回车即可交流。事件、对话和分析结果都保存在 `data/pet/`。
+
+```powershell
+cd src/openlookout
+python -m lookout.pet --start
+```
+
+右键或按 `Esc` 收起对话框，按 `Ctrl+Q` 退出精灵。反馈只参与判断，不会直接变成永久规则。
