@@ -113,3 +113,15 @@ def test_turn_timeout_is_actually_passed_to_the_backend():
     built with it, so the bound is real rather than decorative."""
     assert "task_timeout=TURN_TIMEOUT_S" in _module_source(), \
         "create_backend must receive task_timeout=TURN_TIMEOUT_S"
+
+
+def test_decision_lease_is_bounded():
+    """The runner's decision lease defaults to 7200s -- longer than the silence
+    it exists to prevent, so a turn that forgets to call companion is never cut
+    off.  Measured consequence: the decision was recorded but no bubble ever
+    appeared, because the turn ran out of time before reaching the call."""
+    assert 60 <= brain.DECISION_LEASE_S <= 400, \
+        f"decision lease must stay bounded, got {brain.DECISION_LEASE_S}s"
+    assert brain.DECISION_LEASE_S < 7200
+    assert "decision_lease_timeout=DECISION_LEASE_S" in _module_source(), \
+        "create_backend must receive decision_lease_timeout=DECISION_LEASE_S"

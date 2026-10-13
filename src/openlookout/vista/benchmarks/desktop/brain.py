@@ -32,9 +32,23 @@ PREP_EVERY_TURNS = 24      # rotate one background refresh window every N turns,
 # A companion turn is a glance at the screen plus a short talk, not a research
 # project.  The claude runner defaults to 3600s per turn, which let one turn
 # outlive the entire conversation -- the sprite simply said nothing for hours
-# while the model kept probing.  Four minutes is long enough to read a page and
+# while the model kept probing.  Five minutes is long enough to read a page and
 # check two leads, short enough that a wrong turn gets cut off.
-TURN_TIMEOUT_S = int(os.environ.get("OPENLOOKOUT_TURN_TIMEOUT_S") or 240)
+#
+# The first turn pays for rebuilding the whole visual context, so it needs more
+# headroom than a steady-state step.  Measured: the first turn burned 11 tool
+# calls on setup before it had anything to say, and a 240s cap truncated it
+# before it ever reached the companion call -- the decision was recorded, the
+# bubble never appeared.
+TURN_TIMEOUT_S = int(os.environ.get("OPENLOOKOUT_TURN_TIMEOUT_S") or 300)
+# The decision lease is the runner's "the model should have committed a decision
+# by now" watchdog.  It defaults to 7200s, which is longer than the silence it
+# is supposed to prevent -- so a turn that forgets to call companion is never
+# interrupted and the sprite just goes quiet.  Give it the same order of
+# magnitude as the turn budget: past this, a silent turn is a failure worth
+# cutting off rather than waiting out.
+DECISION_LEASE_S = int(os.environ.get("OPENLOOKOUT_DECISION_LEASE_S")
+                       or TURN_TIMEOUT_S)
 # Use the configured provider model.  Hard-coding an alias here made Claude
 # return a 400 when the endpoint did not publish that model id.
 ACTIVE_MODEL = str(os.environ.get("OPENLOOKOUT_MODEL") or "deepseek-v4.1-flash")
@@ -1154,7 +1168,7 @@ def build(cfg: dict, root: Path):
             binary=binary, image="arc3-claude-player:0.1",
             provider=LOCAL_HOST_PROVIDER, provider_credential=None, provider_base_url=None,
             max_output_tokens=2048, ca_bundle=Path(certifi.where()), host_mode=True,
-            task_timeout=TURN_TIMEOUT_S,
+            task_timeout=TURN_TIMEOUT_S, decision_lease_timeout=DECISION_LEASE_S,
             host_builtin_tools=os.environ.get("OPENLOOKOUT_CLAUDE_BUILTIN_TOOLS", ""))
         print(f"[brain] Claude backend: host-native ({binary})", flush=True)
         return session, runtime, backend, "host-native-unsandboxed"
