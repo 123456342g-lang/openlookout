@@ -29,6 +29,23 @@ MIN_GAP_S = 5              # 页面切换后尽快跟上；节流交给模型判
 HEARTBEAT_S = 900          # 兜底心跳：主触发已交由 sprite/proactive/timing.py 的事件边界算
 PREP_EVERY_TURNS = 24      # rotate one background refresh window every N turns,
                            # even during a busy screen
+# An unanswered user message is the one trigger the sprite cannot afford to
+# miss.  Measured on 10-13: a message written at 07:09:09 waited for the turn
+# already in flight and the bubble appeared at 07:10:02 -- 52.8s, of which the
+# reply turn itself was a fraction.  The turn loop only woke on behaviour
+# triggers (screen change, timing, maintenance), none of which fire just
+# because someone is waiting for an answer, so a quiet screen could strand a
+# message until the next unrelated event.
+#
+# So: never let an unanswered message go unanswered for longer than this.  It
+# is a ceiling, not a target -- the loop still runs as often as its own
+# triggers allow, and MIN_GAP_S still throttles.
+#
+# The ceiling cannot be "forever".  An old unanswered message is no longer
+# someone waiting (they may have walked away, or answered elsewhere), and
+# re-arming on it forever would manufacture turns out of a stale transcript.
+REPLY_DEADLINE_S = 90
+PENDING_MAX_AGE_S = 1800
 # A companion turn is a glance at the screen plus a short talk, not a research
 # project.  The claude runner defaults to 3600s per turn, which let one turn
 # outlive the entire conversation -- the sprite simply said nothing for hours
@@ -447,6 +464,42 @@ def conversation_fact(*, idle_s: float, now: float) -> str:
         + own_recent + "\n" + turn_context + "\n" + response_context + "\n"
         + ("\n".join(transcript) if transcript else "你们还没有实际对话，可结合画面自然开丢个话题）")
     )
+
+
+def pending_reply_age(now: float) -> float | None:
+    """Seconds since the user wrote something the sprite has not answered yet.
+
+    Returns ``None`` when nothing is pending, or when the pending message is too
+    old to still mean "he is waiting".  Age (not a deadline) is the primitive
+    the turn loop needs: it decides both whether this turn should be a reply
+    turn and how much of the reply budget is left.
+
+    The transcript is the source of truth here, not feedback.jsonl: a message
+    typed into the dialog lands in both, but only conversation.jsonl records
+    that the sprite actually answered (``reply_to``).
+    """
+    try:
+        from sprite.proactive import conversation
+        pending = conversation.pending_message(conversation.history(limit=24))
+    except Exception:
+        return None
+    if pending is None:
+        return None
+    try:
+        age = now - float(pending.get("t", 0) or 0)
+    except (TypeError, ValueError):
+        return None
+    if age < 0 or age > PENDING_MAX_AGE_S:
+        return None
+    return age
+
+
+def pending_reply_deadline(now: float) -> float | None:
+    """Epoch seconds by which an unanswered user message must be replied to."""
+    age = pending_reply_age(now)
+    if age is None:
+        return None
+    return now + max(0.0, REPLY_DEADLINE_S - age)
 
 
 def new_feedback(since: float) -> str:
@@ -1360,7 +1413,23 @@ def run() -> None:
             goal_due = agenda.due()
             step_key = continuations.pending(decision, evidence_revision, agenda)
             continue_due = step_key is not None and not fb
-            if not (screen_due or window_due or background_due or maintenance_due or history_due or timing_due or fb or heartbeat_due or return_due or continue_due or goal_due):
+            # A message he is waiting on is a trigger in its own right.  Without
+            # this, a still screen and a healthy model both look like "nothing to
+            # do", and the message waits for the next unrelated event -- measured
+            # 52.8s on 10-13 purely because the loop had no reason to wake up.
+            #
+            # Two separate things, deliberately not one:
+            #   reply_pending -- someone is waiting.  Makes this turn a reply turn.
+            #   reply_due     -- the wait is nearly up.  Additionally wakes the loop.
+            # Priority has to start at the first tick, otherwise the turn that
+            # happens to be running when he writes is the one that wastes its
+            # budget investigating, and the reply lands a turn late.  Only the
+            # deadline is allowed to add a wakeup, so a quiet screen still costs
+            # nothing until the wait is genuinely long.
+            reply_age = pending_reply_age(now)
+            reply_pending = reply_age is not None
+            reply_due = reply_pending and (REPLY_DEADLINE_S - reply_age) <= MIN_GAP_S
+            if not (screen_due or window_due or background_due or maintenance_due or history_due or timing_due or fb or heartbeat_due or return_due or continue_due or goal_due or reply_due):
                 continue
             if continue_due:
                 continuations.consume(step_key, evidence_revision)
@@ -1380,13 +1449,22 @@ def run() -> None:
             desktop_pending, desktop_line = False, ""
             mf = memory_fact()
             idle_s = current_idle_s
-            if prep_due:
+            if prep_due and not reply_pending:
                 cycle = idle_scan_fact(heartbeat=True, idle_s=idle_s, now=now)
                 lead = "这是本次背景准备轮。"
             else:
                 cycle = ""
-                lead = "这是本次实时工作轮。"
+                lead = "这是回话轮：他在等你回答。" if reply_pending else "这是本次实时工作轮。"
             text = ((fb + "\n") if fb else "") + lead + "先看 CURRENT，需要时?history 回看之前的画面；再用 companion 工具决定此刻说什么（或安静）。"
+            if reply_pending:
+                # Whoever triggered this turn, answering him is the whole job.
+                # Without this the model keeps its old objective, spends the turn
+                # investigating, and the reply slips to the following turn --
+                # which is exactly the 52.8s this priority exists to prevent.
+                text += ("\n【优先回话】他在上一条之后还没有收到你的回答，本轮就是为这句而来。"
+                         "已有依据就直接回答，不要先做全量扫描、读整份笔记或检索；"
+                         "确实缺的证据就只补那一处，然后回答。"
+                         "这一轮不要 quiet：除非他这句话已经作废（比如你确认他已自己处理完），否则必须回。")
             if continue_due:
                 text += "\n【续办】这是你选择的可继续下一步，不等待页面变化或用户开口：" + json.dumps(
                     continuations.step, sort_keys=True, ensure_ascii=False)
