@@ -57,17 +57,40 @@ class ChatDialog:
         self.win.after(50, self._focus)
         self._place()
 
+    def _alive(self, *widgets: str) -> bool:
+        """True only while the toplevel, the named widgets, and the app are all up.
+
+        为什么不能直接写 ``if not self.win.winfo_exists()``：
+        ``winfo_exists`` 本身就是一次 Tcl 调用。整个 Tk 应用被销毁后它不再返回 0，
+        而是抛 ``TclError: can't invoke "winfo" command: application has been destroyed``——
+        守卫自己先炸，等于没有守卫（Tk 已死时任何 ``.win.*`` 调用都会这样）。
+        所以判断必须连自己的失败一起吞掉。
+        """
+        try:
+            if not self.win.winfo_exists():
+                return False
+            return all(getattr(self, name).winfo_exists() for name in widgets)
+        except tk.TclError:
+            return False
+
     def _place(self) -> None:
         """按内容实际高度，把对话框底边放在小精灵上方。"""
+        if not self._alive():
+            return
         self.win.update_idletasks()
         w, h = self.win.winfo_reqwidth(), self.win.winfo_reqheight()
         x = max(self.anchor[0] - 20, 0); y = max(self.anchor[1] - h - GAP, 0)
         self.win.geometry(f"{w}x{h}+{x}+{y}")
 
     def _focus(self) -> None:
+        # 这是 win.after(50) 回调：用户 50ms 内点 × 关掉窗口，回调就打在已销毁控件上。
+        if not self._alive("ent"):
+            return
         self.win.focus_force(); self.ent.focus_set()
 
     def send(self) -> None:
+        if not self._alive("ent"):
+            return
         text = self.ent.get().strip()
         if not text: return
         self.ent.delete(0, tk.END)
@@ -78,7 +101,7 @@ class ChatDialog:
         self._place()
 
     def _append_local(self, role: str, text: str) -> None:
-        if not self.win.winfo_exists():
+        if not self._alive("history_box"):
             return
         self.history_box.configure(state="normal")
         stamp = datetime.now().strftime("%H:%M")
@@ -88,7 +111,7 @@ class ChatDialog:
         self.history_box.see(tk.END)
 
     def set_history(self, rows: list[dict]) -> None:
-        if not self.win.winfo_exists() or not self.history_box.winfo_exists():
+        if not self._alive("history_box"):
             return
         self.history_box.configure(state="normal")
         self.history_box.delete("1.0", tk.END)
@@ -103,10 +126,12 @@ class ChatDialog:
         self.history_box.see(tk.END)
 
     def set_status(self, text: str) -> None:
-        if not self.win.winfo_exists():
+        if not self._alive("status"):
             return
         self.status.config(text=text); self._place()
 
     def close(self) -> None:
-        if self.win.winfo_exists():
-            self.win.destroy()
+        # 幂等：已销毁就什么都不做，重复 close / Tk 已死都不该抛。
+        if not self._alive():
+            return
+        self.win.destroy()
