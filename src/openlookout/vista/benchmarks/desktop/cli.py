@@ -13,7 +13,15 @@ HOME = Path(os.environ.get("SPRITE_HOME", r"E:\OpenLookout\sprite_home"))
 
 
 def main(argv=None) -> None:
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(
+        epilog=(
+            "安全默认（issue #13 PR1）：宿主机模式只放行已注册的 desktop_* MCP 工具"
+            "（经风险门与撤销台账），Claude 原生 Edit/Write/MultiEdit/Bash 默认全禁，"
+            "且不使用 bypassPermissions。仅本地开发可显式设置环境变量 "
+            "OPENLOOKOUT_CLAUDE_BUILTIN_TOOLS 透传原生工具；无人值守环境放开等于"
+            "允许模型直接改文件/跑命令，生产（含普通 run_offer）禁止设置。"
+        )
+    )
     ap.add_argument("--objective", required=True)
     ap.add_argument("--binary", type=Path, default=None, help="host claude binary (default: PATH lookup, then the pinned Linux build)")
     ap.add_argument("--directory", type=Path, default=None, help="new run directory (default: a timestamped one)")
@@ -43,10 +51,19 @@ def main(argv=None) -> None:
         if os.environ.get("OPENLOOKOUT_DIRECT_ONLY") == "1":
             from vista.benchmarks.desktop.brain import VisualDirectBackend
             return VisualDirectBackend(cfg, runtime)
+        # 无人值守收口（issue #13 PR1）：普通 run_offer 起的一次性任务只允许
+        # 已注册的 desktop_* MCP 工具（DesktopSession 风险门 + 撤销台账），
+        # companion/basic_*/inspect 在子进程里不可见；原生 Edit/Write/MultiEdit/
+        # Bash 默认全禁（runner 默认 --tools "" + default 权限模式），只有显式
+        # 本地开发 env OPENLOOKOUT_CLAUDE_BUILTIN_TOOLS 才透传。
+        desktop_tools = frozenset(
+            spec.name for spec in runtime.specs if spec.name.startswith("desktop_")
+        )
         return create_backend(
             runtime, directory=directory, oauth_token=None, binary=a.binary, image=PLAYER_IMAGE,
             provider=LOCAL_HOST_PROVIDER, provider_credential=None, provider_base_url=None,
             max_output_tokens=2048, ca_bundle=Path(certifi.where()), host_mode=True,
+            host_mcp_allowlist=desktop_tools,
         )
 
     objective = a.objective + ("（只读：不要挂起、结束或移动任何东西。）" if a.read_only else "")
