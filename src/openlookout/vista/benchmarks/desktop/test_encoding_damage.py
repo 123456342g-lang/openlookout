@@ -125,3 +125,31 @@ def test_decision_lease_is_bounded():
     assert brain.DECISION_LEASE_S < 7200
     assert "decision_lease_timeout=DECISION_LEASE_S" in _module_source(), \
         "create_backend must receive decision_lease_timeout=DECISION_LEASE_S"
+
+
+def test_backend_factory_actually_accepts_the_wired_arguments():
+    """A string-matching assertion is not enough.
+
+    brain.py passes ``decision_lease_timeout=...`` to ``create_backend``.  When
+    the factory did not declare that parameter the call raised TypeError, the
+    whole host-native backend failed to build, and the sprite silently fell back
+    to the direct endpoint -- which then answered every turn with HTTP 400.
+    Every other test stayed green, because none of them built the backend.
+
+    So bind the real signature: if this fails, brain.py is passing something the
+    factory cannot accept and the channel will degrade at runtime.
+    """
+    import inspect
+
+    from vista.backends.claude.factory import create_backend
+
+    accepted = set(inspect.signature(create_backend).parameters)
+    for name in ("task_timeout", "decision_lease_timeout", "host_mode",
+                 "provider", "max_output_tokens", "ca_bundle"):
+        assert name in accepted, \
+            f"brain.py may pass {name}= to create_backend, but it is not a parameter"
+
+    # And the factory must forward it, not swallow it.
+    source = inspect.getsource(create_backend)
+    assert "decision_lease_timeout" in source, \
+        "create_backend accepts decision_lease_timeout but never forwards it to the runner"

@@ -28,6 +28,7 @@ def create_backend(
     ca_bundle: Path | None = None,
     expected_model_id: str | None = None,
     task_timeout: int | None = None,
+    decision_lease_timeout: int | None = None,
     image: str | None = None,
     rate_limit_observer: Callable[[Any], None] | None = None,
     credential_yield_requested: Callable[[], bool] | None = None,
@@ -77,6 +78,11 @@ def create_backend(
         effort=runtime.experiment.effort,
         expected_model_id=expected_model_id,
         task_timeout=resolve_timeout(runtime, task_timeout),
+        # ``None`` must stay ``None``: ClaudeCodeRunner validates the lease and
+        # treats it as an explicit override.  Passing its default through would
+        # silently replace the runner's own7200s with an unrelated number.
+        **({} if decision_lease_timeout is None
+           else {"decision_lease_timeout": decision_lease_timeout}),
         rate_limit_observer=rate_limit_observer,
         credential_yield_requested=credential_yield_requested,
         provider=provider,
