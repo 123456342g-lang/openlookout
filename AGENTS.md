@@ -96,14 +96,26 @@ python -m vista.benchmarks.desktop.brain   # 只跑大脑（调试）
 
 **已验证**：VISTA 持续会话多轮循环；`history` 回看前一轮画面；companion 工具产出陪伴语和提议；热更新；窗口进程可拉起；
 通用事实三线（画面计时 `watching` / 视觉外 `systemfacts` / 反馈记忆 `memory`）共 40 个测试通过，本机实测两条线在安静环境下都返回空串（宁可安静）。
+**同意门已在真机链路上验证成立**（2026-10-13，`verify/offer-consent-e2e`）：用
+`canvas.event_generate("<Button-1>")` 在按钮真实像素坐标投递真鼠标事件（不是直接调回调），
+真起 Tk、真跑 `tick → present → w.show → tag_bind → _click → on_choice`，实测落盘：
+点「好的」→ `outcomes.jsonl` 出现 `accepted` + `offers.jsonl` 出现 `started`，执行被触发；
+不点→ `gui.show` 自己的 `after` 定时器真到期 → `expired` + `ignored`，执行 0 次；
+点「不用」→ `rejected`，执行 0 次。全程 `SPRITE_HOME` 隔离，真实账本零写入，用户在用的精灵进程未重启。
 
 **未验证 / 待做**：
 - 点“好的”后的**执行链路**（桌面任务 → 结论回显 → 撤销）没有端到端跑过。
-  （2026-10-13 已打通一半：同意门与选项 UI 有真实点击的端到端测试，`accepted`/`rejected`
-  真的落进 `outcomes.jsonl`；但测试里 `run_offer` 是打桩的，**真跑一次桌面任务**仍未验证。）
+  （同意门本身已真机验证；但 `run_offer` 仍是打桩的，**真跑一次桌面任务**仍未验证。
+  真跑需要点头的人在场，且会真的动电脑——不要在验证脚本里自动做。）
 - **同意门管不到 brain 自己那条路**：brain 的常驻观察循环直接持有 `desktop_trim` /
   `desktop_reclaim` / `desktop_tidy` 等改动工具，不经过 offer，所以「必须点头才动手」
-  目前只约束 offer 这一条路径（决策记录里可见 36 次 brain 直接改动）。
+  目前只约束 offer 这一条路径。按 `quarantine/restore_map.jsonl` 的权威时间戳，
+  10-12 那天**5189 次隔离（约 5.05GB）全部来自 brain 直接路径**（其中一次 4959 个文件 / 3.8GB），
+  offer 自动执行窗口内只有 71 次（104.6MB，且多数是 pytest 临时文件）。
+  也就是说：历史上最大的那笔自动改动，同意门根本管不到——真正的缺口在这里。
+- **拒绝必须落`offers.jsonl`**（本次修复）：`tick` 用 `offer_status()` 判断「有没有结论」，
+  而它只读 `offers.jsonl`；原先拒绝只写 `outcomes.jsonl`，于是点过「不用」的提议
+  在窗口重启（热更新就会重启）后会被重新摆出来问一遍。已修（`live.py` `on_choice`）。
 - **GUIDE.md 用户画像**：机制已接好，但模型尚未形成有内容的画像（仍是初始值），需要观察它是否真的会写。
 - 场景提示词（陪读书三档/写代码/修电脑/桌面整理）刚按“通用机制”重写，**还没有真实场景验证**。
 - 开口时机的质量没有数据：需要真人使用几天，看 `outcomes.jsonl` 里提议的接受/拒绝比例

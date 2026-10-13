@@ -357,6 +357,14 @@ def run_gui() -> None:
             label = options[i] if 0 <= i < len(options) else None
             record_outcome(offer, "accepted" if i == 0 else "rejected",
                            options=options, choice_index=i, choice=label)
+            # 拒绝也必须写进 offers.jsonl：tick 判断「这条提议是不是已经有结论」
+            # 用的是 offer_status，它**只读 offers.jsonl**（live.py:603）。
+            # 只写 outcomes.jsonl 的话，用户点了「不用」、窗口一重启（热更新就重启），
+            # 这条提议会因为状态还是 shown 而被重新摆出来问一遍——正是硬规则 2
+            # 「拒绝过的提议不换说法再提」要禁止的事。
+            # （正例不受影响：start_offer 会写 started。）
+            if i != 0:
+                record_offer_result(offer, "rejected", choice=label, choice_index=i)
             # 先收起带选项的气泡，再开始执行：start_offer 会 present 一条新气泡，
             # 顺序反了会把「好，我开始处理…」一起收掉。
             w.hide(expired=False)

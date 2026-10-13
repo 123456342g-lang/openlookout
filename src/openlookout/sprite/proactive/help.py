@@ -116,11 +116,13 @@ def recently_said(topic: str, kind: str, window_s: float | None = None) -> bool:
             continue
         # 已经回应过（好的/不用）：这件事有下文了。拒绝的只在 DISMISS_S 内有效，
         # 过了就该重新掂量；接受过的则长期有效——做完的事不用反复邀功。
-        # （同意门之后 accepted/rejected 由 live.on_choice 写进 outcomes.jsonl，
-        #  这里读的是 offers.jsonl 的执行侧状态：started 才代表真动手了。）
+        # （同意门之后 accepted/rejected 两个词由 live.on_choice 写：
+        #  accept 走 offers.jsonl 的 started，reject 直接落 rejected；
+        #  outcomes.jsonl 那边是给统计用的学习信号，不参与这里的闸。）
         if r.get("result") == "dismissed" and now - r.get("t", 0) < DISMISS_S:
             return True
-        if r.get("result") in {"accepted", "started", "auto_started", "auto_completed", "undone"}:
+        if r.get("result") in {"accepted", "rejected", "started", "auto_started",
+                               "auto_completed", "undone"}:
             return True
         # 说过但没回应：按各自窗口算。带选项的 offer 已经问过了还没答复，
         # 不该在冷却窗口内再弹一次同样的问题。

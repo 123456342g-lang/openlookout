@@ -25,6 +25,7 @@ from __future__ import annotations
 import inspect
 import json
 import subprocess
+import time
 
 import pytest
 
@@ -198,3 +199,87 @@ def test_conversation_renders_new_consent_states(tmp_path, monkeypatch):
     labels = [r["text"] for r in conversation.history()]
     assert any("开始处理" in t for t in labels), labels
     assert any("作废" in t and "没有动手" in t for t in labels), labels
+
+
+# ── 7. 拒绝也必须留下「已结论」，否则窗口重启会把同一条提议再问一遍 ────────
+
+def _run_on_choice(monkeypatch, offer: dict, index: int) -> None:
+    """真的把 run_gui 里那个 on_choice 闭包驱动起来。
+
+    on_choice 是 run_gui 的内部闭包，取不出来；但它只依赖三样东西：
+    offer_state["offer"]、w.hide()、以及 record_outcome/record_offer_result。
+    所以这里从**真实源码**里抽出 on_choice 的函数体，在假的 offer_state/w 上执行——
+    测的是live.py 里那段代码本身，而不是测试自己重写一遍。
+    真实 Tk 事件链路由 test_offer_consent_e2e.py 覆盖。
+    """
+    import textwrap
+    import types
+
+    src = textwrap.dedent(inspect.getsource(live.run_gui))
+    start = src.index("def on_choice")
+    # 取到下一个同缩进的顶层 def 为止
+    rest = src[start:]
+    lines = rest.splitlines(keepends=True)
+    body = [lines[0]]
+    for line in lines[1:]:
+        if line.strip() and not line.startswith("        "):
+            break
+        body.append(line)
+    src_fn = textwrap.dedent("".join(body))
+
+    ns: dict = {}
+    record_outcome = live.record_outcome
+    record_offer_result = live.record_offer_result
+
+    def record_outcome_spy(offer, outcome, **extra):
+        return record_outcome(offer, outcome, **extra)
+
+    def record_offer_result_spy(offer, result, **extra):
+        return record_offer_result(offer, result, **extra)
+
+    exec(compile(src_fn, "<live.on_choice>", "exec"), ns)  # noqa: S102
+    offer_state = {"offer": offer}
+    w = types.SimpleNamespace(hide=lambda **k: None)
+    ns.update(dict(record_outcome=record_outcome_spy,
+                   record_offer_result=record_offer_result_spy,
+                   offer_state=offer_state, w=w, start_offer=lambda o: None,
+                   OFFER_OPTIONS=helpmod.OFFER_OPTIONS))
+    ns["on_choice"](index)
+    monkeypatch.setattr(live, "_last_on_choice_state", offer_state, raising=False)
+
+
+def test_rejection_is_written_to_offers_jsonl(tmp_path, monkeypatch):
+    """真机验证抓到的缺陷：点「不用」只落 outcomes.jsonl，offers.jsonl 没有结论。
+
+    tick 判断「这条提议是不是已经有结论」走 offer_status，而它**只读 offers.jsonl**
+    （live.py:603）。所以只写 outcomes 的话，用户已经拒绝了，窗口一重启
+    （热更新就会重启窗口）这条提议状态还是 shown，会被重新摆出来问一遍——
+    违反硬规则 2「拒绝过的提议不换说法再提」。
+
+    这里**不自己调 record_offer_result**（那样测的是测试自己写没写），
+    而是真的把 on_choice 从 run_gui 里驱动起来，只替换它依赖的窗口对象。
+    """
+    monkeypatch.setattr(live, "DIR", tmp_path)
+    offer = {"id": "o-rej", "kind": "offer", "topic": "C盘", "text": "清一下 C 盘？",
+             "options": ["好的", "不用"], "t": 1.0}
+    _run_on_choice(monkeypatch, offer, 1)
+
+    assert live.offer_status("o-rej") == "rejected"
+    assert live.offer_status("o-rej") in live.SETTLED_OFFER_STATES, \
+        "拒绝后必须算已结论，否则重启会再问一遍"
+
+
+def test_cooldown_treats_rejection_as_answered(tmp_path, monkeypatch):
+    """被拒绝的提议，冷却期内不许换个说法再提。"""
+    monkeypatch.setattr(helpmod, "OFFER_LOG", tmp_path / "offers.jsonl")
+    (tmp_path / "offers.jsonl").write_text(
+        json.dumps({"id": "o1", "topic": "C盘", "result": "rejected", "t": time.time()},
+                   ensure_ascii=False) + "\n", encoding="utf-8")
+    assert helpmod.recently_said("C盘", "offer") is True
+
+
+def test_expired_offer_status_blocks_reask(tmp_path, monkeypatch):
+    """到期作废同样要算已结论（这条原来就成立，钉住它）。"""
+    monkeypatch.setattr(live, "DIR", tmp_path)
+    live.record_offer_result({"id": "o-exp", "kind": "offer"}, "expired")
+    assert live.offer_status("o-exp") in live.SETTLED_OFFER_STATES

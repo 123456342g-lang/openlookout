@@ -282,3 +282,42 @@ def test_companion_bubble_never_asks_for_permission(monkeypatch):
     assert seen["buttons"] == [], "陪伴语不该带任何按钮"
     outcomes = _rows("outcomes.jsonl")
     assert [r["outcome"] for r in outcomes] == ["unanswered"], outcomes
+
+
+def test_rejected_offer_is_not_offered_again_after_restart(monkeypatch):
+    """真机验证抓到的缺陷：点「不用」之后，窗口重启必须**不再问**这条提议。
+
+    之前拒绝只写 outcomes.jsonl，而 tick 的offer_status() 只读 offers.jsonl，
+    于是状态停在 shown，重启（热更新就会重启窗口）后这条提议被重新摆出来。
+    这里走完整链路：真点「不用」→ 模拟窗口重启 → 断言新窗口不再摆它。
+    """
+    _reset()
+    _publish()
+    executed: list[dict] = []
+
+    def script_reject(win, pump):
+        assert win._buttons(), "带选项的 offer 必须摆出按钮"
+        win._click(("choice", 1))
+        pump(12)
+
+    _drive(script_reject, monkeypatch, executed)
+    assert [r["outcome"] for r in _rows("outcomes.jsonl")] == ["rejected"]
+    assert executed == [], "拒绝了却执行了"
+
+    # 拒绝必须也落进 offers.jsonl，否则重启判断看不见它
+    results = [r["result"] for r in _rows("offers.jsonl")]
+    assert "rejected" in results, f"offers.jsonl 里没有rejected：{results}"
+    assert live.offer_status(_rows("offers.jsonl")[0]["id"]) in live.SETTLED_OFFER_STATES
+
+    # 窗口重启：新进程里不该再看到这条提议
+    shown: dict = {}
+    executed.clear()
+
+    def script_restart(win, pump):
+        shown["msg"] = win.msg.get("text")
+        pump(6)
+
+    _drive(script_restart, monkeypatch, executed)
+    assert "C 盘快满了" not in str(shown["msg"]), \
+        f"用户已经点过不用，重启后却又被问了一遍：{shown}"
+    assert executed == []
