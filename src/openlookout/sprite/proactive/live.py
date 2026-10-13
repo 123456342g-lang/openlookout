@@ -205,13 +205,52 @@ CHILDREN = {
     "recorder": [str(ROOT.parents[1] / "record_win.py"), "--out", str(DIR / "operations.jsonl"),
                  "--ext-port", "0", "--parent-pid", str(os.getpid()), "--heartbeat", "60"],
 }
-CHECK_S, SHOW_S = 2, 3600
+# 监督循环每 2 秒看一次子进程。旁边曾有一个同样写死的 SHOW_S，是「气泡挂一小时」
+# 那个 bug 的源头之一；它早已没有任何调用点，删掉而不是留着继续误导人。
+CHECK_S = 2
 NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 OFFER_MAX_AGE_S = 180
-# 带选项的气泡停留时长（秒）。gui.show 对带 options 的气泡会自动 ×5，
-# 所以这里 120 实际给用户 600s 的决定时间——他不必守在屏幕前，但也在等一个答复。
-OFFER_ASK_S = 120
-CURRENT_MAX_AGE_S = 15
+# 带选项的气泡停留时长（秒）。gui.show 对带 options 的气泡会再乘一次系数 2。
+# 原来这里的基数是 120，乘 5 之后实际给用户 600s——为了一个「好的/不用」
+# 让人等十分钟，等不到就过期作废，等于提议白提。现在基数 60、系数 2，
+# 实际 60×2=120s（上一版注释误写成 300s，算术错了，issue #11 新发现 2）：
+# 够读完并点头/拒绝，又不至于久到忘了这是在问什么。
+OFFER_ASK_S = 60
+# 气泡停留时长按内容量给，不给固定值。实测问题：companion 气泡写死 180s、
+# 待机提示挂满一小时，用户看到的是「同一句话杵在屏幕上一小时」。
+# 一条 60 字的话读完大约 4 秒；给 30s 已经是很宽的余量。
+# BUBBLE_READ_S 是基础值，按长度每 10 字再加 1 秒，上限 90s：
+# 短句一闪就过，长句留得久一点，不会出现短句霸屏一小时。
+BUBBLE_READ_S, BUBBLE_PER_CHAR_S, BUBBLE_MAX_S = 30.0, 0.1, 90.0
+# 待机提示文案。这是句引导语，不是精灵对用户说的话——所以 present() 里
+# 显式不把它写进对话记录（否则 transcript 里会出现一条它从未说过的发言）。
+IDLE_HINT_TEXT = "我在，点我可以直接聊天。"
+# 「正在处理」状态最多保持多久（毫秒）。这是一道**状态**上限，不是气泡时长：
+# run_offer 允许跑到 900s，在这段时间里 tick 不能把精灵的进度汇报当成新提议
+# 重新处理一遍。气泡早已自己消失，但「还在忙」这个事实要留着。
+WORKING_GUARD_MS = 900_000
+
+
+def bubble_seconds(text: str, *, floor: float = BUBBLE_READ_S) -> float:
+    """气泡该停留多久：够读完这句话就行，不占着屏幕。"""
+    length = len(str(text or ""))
+    return max(floor, min(BUBBLE_MAX_S, BUBBLE_READ_S + length * BUBBLE_PER_CHAR_S))
+
+
+# GUI（热更新/崩溃）重启后，多久以前的 companion 句还允许重新弹一次。
+# 旧值在 read_offer() 里写死 900s：任何一次窗口重启都会把 15 分钟内弹过的
+# 旧闲聊原样重弹——气泡本体早就消失了，重启却让它「复活」，和「同一句话
+# 显示很久」是同一种体验（issue #11 新发现 1）。
+# 取舍：重放窗口 = 这句话本来该在屏幕上活的时间（bubble_seconds，30~90s）
+# + 一次重启宽限。正常热更新/崩溃拉起只花几秒，当句不会丢；但气泡生命
+# 早已结束的旧句不许再弹。刻意不按 900s 对齐 run_offer——那是**执行**预算
+# （WORKING_GUARD_MS 守护的「正在处理」状态），与一句闲聊的可读寿命无关。
+COMPANION_REPLAY_GRACE_S = 15.0
+
+
+def companion_max_age_s(offer: dict) -> float:
+    """companion 句在 GUI 重启后仍可重放的年龄上限：气泡生命 + 一次重启宽限。"""
+    return bubble_seconds(offer.get("text")) + COMPANION_REPLAY_GRACE_S
 
 # 这些状态说明这条 offer 已经有结论了，窗口重启后不许再拿它去问一次。
 # 旧的 auto_* 是同意门之前的历史词表，保留是为了让重启判断对老记录仍然成立。
@@ -223,11 +262,33 @@ SETTLED_OFFER_STATES = frozenset({
 })
 
 
+_LOG_FAILS = 0
+
+
 def log(msg: str) -> None:
-    DIR.mkdir(parents=True, exist_ok=True)
+    """写一行监督日志。**任何写盘失败都不能往上抛。**
+
+    实测事故（10-13 17:06~17:09）：C 盘被填到 0 字节，这一行里的
+    SUP_LOG.open() 抛 ENOSPC，异常直接穿过 supervise() 的 finally，
+    把 brain / gui / recorder 三个子进程全部 terminate 掉——精灵就这么
+    静默死了，日志里连「已停止」都没留下（写那句也失败）。
+    用户看到的就是「启动一次说一次话，然后就再也不说了」。
+
+    日志是附属品，精灵不是。所以这里必须吞掉异常：宁可丢一行日志，
+    也不能让一次磁盘满把整个陪伴循环带走。
+    """
+    global _LOG_FAILS
     line = f"{datetime.now():%H:%M:%S} {msg}"
-    with SUP_LOG.open("a", encoding="utf-8") as f: f.write(line + "\n")
-    print(line, flush=True)
+    try:
+        DIR.mkdir(parents=True, exist_ok=True)
+        with SUP_LOG.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except OSError:
+        _LOG_FAILS += 1
+    try:
+        print(line, flush=True)
+    except Exception:
+        pass
 
 
 def watched_stamp() -> float:
@@ -269,42 +330,91 @@ def start(name: str) -> subprocess.Popen:
                             creationflags=NO_WINDOW, stdout=out, stderr=subprocess.STDOUT)
 
 
+# 单个子进程连续多少次拉不起来就把它从监督表摘掉。start() 失败通常是磁盘满/
+# 句柄耗尽，瞬时故障本该重试；但代码本身有语法错误时会永久失败，每 2 秒重试
+# 一次只会刷满 CPU——超过这个次数就放弃这一个孩子，其余部分继续活着。
+MAX_START_FAILS = 30
+
+
+def reconcile_exits(procs: dict, fails: dict, *, start=start, log=log,
+                    max_fails: int = MAX_START_FAILS) -> dict:
+    """检查并拉起已退出的子进程；连续失败达上限的孩子被摘除。
+
+    纯编排、可注入：``start``/``log`` 都是参数，测试不必真的拉起或杀掉任何
+    进程（issue #11 验收：监督容错此前零覆盖）。
+
+    - 孩子还活着（poll() is None）：跳过；
+    - start 抛 OSError（磁盘满/句柄耗尽/可执行文件缺失都属此类）：计数 +1，
+      达到 ``max_fails`` 就把该孩子从 ``procs`` 摘除，其余孩子不受牵连；
+    - start 成功：计数清零。
+    其它异常不在此吞——交给监督轮外层的 try/except 兜底，免得掩盖编程错误。
+    ``fails`` 原地更新并返回，``procs`` 也是原地改。
+    """
+    for name, proc in list(procs.items()):
+        if proc.poll() is None:
+            continue
+        try:
+            procs[name] = start(name)
+        except OSError as exc:
+            fails[name] = fails.get(name, 0) + 1
+            if fails[name] >= max_fails:
+                log(f"{name} 连续 {fails[name]} 次拉不起来（{type(exc).__name__}），"
+                    "暂时放弃它，其余部分继续")
+                procs.pop(name, None)
+            continue
+        fails[name] = 0
+        log(f"{name} 退出，已自动拉起")
+    return fails
+
+
 def supervise() -> None:
     procs = {n: start(n) for n in CHILDREN}
     seen_all, seen_brain = watched_stamp(), brain_stamp()
     log("启动：brain（持续视觉上下文）+ 窗口 + 操作记录器")
+    # 每个孩子的连续拉起失败计数；达 MAX_START_FAILS 由 reconcile_exits 摘除。
+    start_fails: dict[str, int] = {}
     try:
         while True:
             time.sleep(CHECK_S)
-            for n, p in list(procs.items()):
-                if p.poll() is not None:
-                    procs[n] = start(n); log(f"{n} 退出，已自动拉起")
-            b = brain_stamp()
-            if b != seen_brain:
-                # 只有 brain 自己变了才重启它：它正在积累的视觉上下文比新代码更值钱
-                seen_brain = b
-                log("brain 代码变了：重启 brain（视觉上下文会重来，这是必要代价）")
-                p = procs.get("brain")
-                if p: p.terminate()
-                if p:
-                    try: p.wait(10)
-                    except subprocess.TimeoutExpired: p.kill()
-                procs["brain"] = start("brain")
-            a = watched_stamp()
-            if a != seen_all:
-                # 别的文件变了：不杀 brain。改动会在它下一轮自然生效。
-                seen_all = a
-                g = procs.get("gui")
-                if g: g.terminate()
-                if g:
-                    try: g.wait(10)
-                    except subprocess.TimeoutExpired: g.kill()
-                procs["gui"] = start("gui")
-                log("其它代码变了：只热更新窗口，brain 的持续视觉上下文保留")
+            # 整个循环体包住：这一轮的任何异常都不能杀死监督进程。
+            # 10-13 的事故是 log() 的 ENOSPC 穿出去带走了全部子进程；同类
+            # 风险还有 stat()、start()、poll()。它们都是可恢复的瞬时故障，
+            # 而「监督进程活着」本身就是精灵不消失的前提。
+            try:
+                reconcile_exits(procs, start_fails)
+                b = brain_stamp()
+                if b != seen_brain:
+                    # 只有 brain 自己变了才重启它：它正在积累的视觉上下文比新代码更值钱
+                    seen_brain = b
+                    log("brain 代码变了：重启 brain（视觉上下文会重来，这是必要代价）")
+                    p = procs.get("brain")
+                    if p: p.terminate()
+                    if p:
+                        try: p.wait(10)
+                        except subprocess.TimeoutExpired: p.kill()
+                    procs["brain"] = start("brain")
+                a = watched_stamp()
+                if a != seen_all:
+                    # 别的文件变了：不杀 brain。改动会在它下一轮自然生效。
+                    seen_all = a
+                    g = procs.get("gui")
+                    if g: g.terminate()
+                    if g:
+                        try: g.wait(10)
+                        except subprocess.TimeoutExpired: g.kill()
+                    procs["gui"] = start("gui")
+                    log("其它代码变了：只热更新窗口，brain 的持续视觉上下文保留")
+            except OSError as exc:
+                # 磁盘满、句柄耗尽之类。丢掉这一轮的判断，下一轮再来。
+                log(f"监督轮异常（{type(exc).__name__}），已跳过，精灵继续运行")
+            except Exception as exc:
+                log(f"监督轮未预期异常（{type(exc).__name__}: {exc}），已跳过，精灵继续运行")
     except KeyboardInterrupt:
         pass
     finally:
-        for p in procs.values(): p.terminate()
+        for p in procs.values():
+            try: p.terminate()
+            except Exception: pass
         log("已停止")
 
 
@@ -351,10 +461,10 @@ def run_gui() -> None:
     offer_state: dict = {"id": None, "offer": None, "running": None}
     opened = {"dlg": None}
 
-    def present(msg: dict, seconds: int, *, event_id: str | None = None) -> None:
+    def present(msg: dict, seconds: float, *, event_id: str | None = None) -> None:
         """Show immediately and append to the conversation without blocking tick()."""
         text = str(msg.get("text") or "").strip()
-        if text and text != "我在准备下一步，点我可以直接聊天。":
+        if text and text != IDLE_HINT_TEXT:
             conversation.append("assistant", text, kind=str(msg.get("kind") or "say"),
                                 event_id=event_id, reply_to=msg.get("reply_to"))
         # A long lived chat window must never hide an action or completion
@@ -374,6 +484,11 @@ def run_gui() -> None:
                 # this GUI tick. Drop the stale Tk reference; the next click
                 # will create a fresh dialog.
                 opened["dlg"] = None
+
+    def present_say(msg: dict, *, floor: float = BUBBLE_READ_S,
+                    event_id: str | None = None) -> None:
+        """一句话气泡：停留时长由这句话本身的长度决定，不写死。"""
+        present(msg, bubble_seconds(msg.get("text"), floor=floor), event_id=event_id)
 
     def on_choice(i, ok=False) -> None:
         """用户对 offer 点了某个选项。**只有点了第一个（好的）才执行。**
@@ -404,13 +519,18 @@ def run_gui() -> None:
         offer_state["running"] = offer.get("id")
         record_offer_result(offer, "started")
         label = offer.get("topic") or "这件事"
-        present(dict(kind="say", text=f"好，我开始处理{label}，完成后告诉你。"), 120,
-                event_id=f"{offer.get('id')}:started")
+        present_say(dict(kind="say", text=f"好，我开始处理{label}，完成后告诉你。"),
+                    event_id=f"{offer.get('id')}:started")
 
         def report(msg: dict) -> None:
             def deliver() -> None:
-                present(msg, 120, event_id=f"{offer.get('id')}:completed")
-                root.after(120000, lambda: offer_state.update(running=None))
+                # 完成汇报可能很长（批次结果、路径清单），给足读完的时间，
+                # 但仍然有上限——它不该变成一块常驻在屏幕上的告示牌。
+                present(msg, bubble_seconds(msg.get("text"), floor=45.0),
+                        event_id=f"{offer.get('id')}:completed")
+                # running 的解除与气泡时长无关：一次 run_offer 最多跑 900s，
+                # 早于那时清掉会让 tick 把后续进度气泡当成新提议重新处理。
+                root.after(WORKING_GUARD_MS, lambda: offer_state.update(running=None))
             root.after(0, deliver)
 
         if offer.get("items"):
@@ -449,16 +569,17 @@ def run_gui() -> None:
                 text = "撤回没有启动成功，请稍后再试。"
             if offer:
                 record_offer_result(offer, "undone")
-            root.after(0, lambda: present(dict(kind="say", text=text), 30))
+            root.after(0, lambda: present_say(dict(kind="say", text=text)))
 
         threading.Thread(target=undo_and_report, daemon=True).start()
 
     w = SpriteWindow(root, DIR, on_choice, on_undo, on_expire)
     w.set_state("observing")
-    # Keep the conversation entry point discoverable even when the brain
-    # correctly chooses quiet for the current screen. A real offer/report
-    # replaces this bubble; otherwise it remains the idle affordance.
-    w.show(dict(kind="say", text="我在准备下一步，点我可以直接聊天。"), 3600)
+    # 待机提示。原来是 3600s——那句话会在屏幕上钉一小时，用户看到的就是
+    # 「同一句话一直显示」；而且它是被过滤掉不写进对话记录的，等于屏幕上
+    # 挂着一句幽灵话。点精灵随时能开对话框，这个提示只需要露个面。
+    IDLE_HINT_S = 6.0
+    w.show(dict(kind="say", text=IDLE_HINT_TEXT), IDLE_HINT_S)
     shown = {"t": None}
 
     def tick() -> None:
@@ -468,8 +589,11 @@ def run_gui() -> None:
                 offer_state.update(id=offer.get("id"), offer=offer, running=None)
                 CURRENT_OFFER.update(id=offer.get("id"), offer=offer)
                 if offer.get("kind") == "companion":
-                    present(dict(kind="say", text=offer["text"], reply_to=offer.get("reply_to")),
-                            180, event_id=str(offer.get("id") or ""))
+                    # 闲聊气泡按长度计时。原来固定 180s：一句 20 字的话
+                    # 在屏幕上钉三分钟，读完早就走了，看着像卡住不动。
+                    present_say(dict(kind="say", text=offer["text"],
+                                     reply_to=offer.get("reply_to")),
+                                event_id=str(offer.get("id") or ""))
                 elif offer_status(offer.get("id")) not in SETTLED_OFFER_STATES:
                     # 同意门：offer 到这里只是**把选项摆到用户面前**，不执行。
                     # gui._buttons 见到 options 就会画出「好的/不用」，点击走 on_choice，
@@ -524,9 +648,11 @@ def run_gui() -> None:
 def read_offer() -> dict | None:
     try:
         offer = json.loads((DIR / "offer.json").read_text(encoding="utf-8"))
-        # A companion sentence is informational and can wait through a GUI
-        # restart; an action offer stays short-lived so stale actions never run.
-        max_age = 900 if offer.get("kind") == "companion" else OFFER_MAX_AGE_S
+        # companion 是信息性的一句话：重启宽限只给到「它本来还该在屏幕上活的
+        # 时间 + 一次重启」（见 companion_max_age_s），旧值 900s 会让 15 分钟前
+        # 的闲聊在每次热更新后复活重弹。action offer 仍保持短命，过期动作绝不执行。
+        max_age = (companion_max_age_s(offer) if offer.get("kind") == "companion"
+                   else OFFER_MAX_AGE_S)
         if time.time() - float(offer.get("t", 0)) > max_age:
             return None
         return offer
