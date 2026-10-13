@@ -45,3 +45,6 @@ final_demo_sprite_bubble.png
 src/openlookout/trigger.log
 src/openlookout/tmp_pytest_out.txt
 /sprite/
+brain.py.broken-*
+brain.py.codex-*
+brain.py.work-*.bak
