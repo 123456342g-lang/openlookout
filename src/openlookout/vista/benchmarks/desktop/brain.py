@@ -24,11 +24,20 @@ PERCEIVE = HOME / "perceive"
 FEEDBACK = PERCEIVE / "feedback.jsonl"
 OFFERS = PERCEIVE / "offers.jsonl"
 PROJECT = Path(__file__).resolve().parents[3]
-CHANGE_MIN = 0.01          # 屏幕缩略图平均差异超?1% 就重新判?MIN_GAP_S = 5              # 页面切换后尽快跟上；节流交给模型判断和输出闸
-HEARTBEAT_S = 900          # 兜底心跳：主触发已交?sprite/proactive/timing.py 的事件边界算?PREP_EVERY_TURNS = 24      # rotate one background scan even during a busy screen
+CHANGE_MIN = 0.01          # 屏幕缩略图平均差异超 1% 就重新判断
+MIN_GAP_S = 5              # 页面切换后尽快跟上；节流交给模型判断和输出闸
+HEARTBEAT_S = 900          # 兜底心跳：主触发已交由 sprite/proactive/timing.py 的事件边界算
+PREP_EVERY_TURNS = 24      # rotate one background refresh window every N turns,
+                           # even during a busy screen
+# A companion turn is a glance at the screen plus a short talk, not a research
+# project.  The claude runner defaults to 3600s per turn, which let one turn
+# outlive the entire conversation -- the sprite simply said nothing for hours
+# while the model kept probing.  Four minutes is long enough to read a page and
+# check two leads, short enough that a wrong turn gets cut off.
+TURN_TIMEOUT_S = int(os.environ.get("OPENLOOKOUT_TURN_TIMEOUT_S") or 240)
 # Use the configured provider model.  Hard-coding an alias here made Claude
 # return a 400 when the endpoint did not publish that model id.
-ACTIVE_MODEL = "mimo-v2.6-flash"
+ACTIVE_MODEL = str(os.environ.get("OPENLOOKOUT_MODEL") or "deepseek-v4.1-flash")
 
 
 def thumb(visual) -> list[int]:
@@ -370,7 +379,7 @@ def conversation_fact(*, idle_s: float, now: float) -> str:
     """Bring delivered dialogue into the same VISTA judgment as the screen."""
     from sprite.proactive import conversation
 
-    rows = conversation.history(limit=12)
+    rows = conversation.history(limit=24)
     pending = conversation.pending_message(rows)
     latest_user = max((index for index, row in enumerate(rows) if row.get("role") == "user"), default=-1)
     transcript = []
@@ -380,9 +389,28 @@ def conversation_fact(*, idle_s: float, now: float) -> str:
             continue
         if row.get("kind") == "reply":
             continue
-        role = "浠" if row.get("role") == "user" else "浣"
+        role = "你" if row.get("role") == "user" else "我"
         stamp = time.strftime("%m-%d %H:%M:%S", time.localtime(float(row.get("t", 0) or 0)))
         transcript.append(f"{stamp} {role}：{str(row.get('text') or '')[:500]}")
+
+    # 精灵自己刚说过什么。少了这一段，模型每轮都在重新发现同一件事，
+    # 于是把同一条结论换个说法再讲一遍——用户看到的就是"一直说重复的事"。
+    # kind=reply 是回话轮的附带产物（常见的是占位式敷衍），不算"说过的话"：
+    # 把它列出来等于提醒模型去重复它。
+    recent_own = [
+        str(row.get("text") or "").strip()
+        for row in rows
+        if row.get("role") == "assistant" and row.get("kind") != "reply"
+        and str(row.get("text") or "").strip()
+    ][-6:]
+    if recent_own:
+        said = "；".join(line.replace("\n", " ")[:80] for line in recent_own)
+        own_recent = ("【我最近说过的话】" + said +
+                      "\n这几条你已经讲过了。没有新的回应或新证据就不要换个说法重讲；"
+                      "也别把没得到回应的枝节自动续下去。")
+    else:
+        own_recent = "【我最近说过的话】还没有，这是第一次开口。"
+
     latest_assistant = max((index for index, row in enumerate(rows) if row.get("role") == "assistant"), default=-1)
     replied = any(row.get("role") == "user" for row in rows[latest_assistant + 1:])
     response_context = (
@@ -401,7 +429,8 @@ def conversation_fact(*, idle_s: float, now: float) -> str:
     return (
         f"【对话现场】出现于 {time.strftime('%H:%M:%S', time.localtime(now))}。"
         f"键鼠静止 {idle_s:.0f} 秒，这是节奏线索，不是聊天开关，也不证明他离开。\n"
-        "仅附最近的真实交流，旧事不当当前事实工作进行中也可以聊。\n" + turn_context + "\n" + response_context + "\n"
+        "仅附最近的真实交流，旧事不当当前事实工作进行中也可以聊。\n"
+        + own_recent + "\n" + turn_context + "\n" + response_context + "\n"
         + ("\n".join(transcript) if transcript else "你们还没有实际对话，可结合画面自然开丢个话题）")
     )
 
@@ -1125,6 +1154,7 @@ def build(cfg: dict, root: Path):
             binary=binary, image="arc3-claude-player:0.1",
             provider=LOCAL_HOST_PROVIDER, provider_credential=None, provider_base_url=None,
             max_output_tokens=2048, ca_bundle=Path(certifi.where()), host_mode=True,
+            task_timeout=TURN_TIMEOUT_S,
             host_builtin_tools=os.environ.get("OPENLOOKOUT_CLAUDE_BUILTIN_TOOLS", ""))
         print(f"[brain] Claude backend: host-native ({binary})", flush=True)
         return session, runtime, backend, "host-native-unsandboxed"
