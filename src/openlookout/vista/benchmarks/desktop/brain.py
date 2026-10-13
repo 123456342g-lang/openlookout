@@ -40,6 +40,12 @@ MIN_GAP_S = 5              # 页面切换后尽快跟上；节流交给模型判
 # 心跳小于一轮耗时会退化成连续排队。这里取 240s——保证「任何时候静默不超过
 # 约 4 分钟 + 一轮耗时」，同时留出足够空档。
 HEARTBEAT_S = 240
+# 带图模型轮是最贵的资源。高频感知由 2s 本地哨兵免费完成（缩略图 diff、
+# 窗口切换、键鼠 idle、操作流断点、C盘/内存）；只有强视觉信号才把新截图
+# 送进模型，纯心跳/维护/续办轮走无图文本轮（VISTA 核心支持 STEP 空
+# observation：runtime.prepare_input STEP observation=None → 空 bundle，
+# 历史画面仍在视觉记忆里）。屏幕持续静止时，带图轮靠这个兜底间隔保底。
+VISUAL_RECHECK_S = 900
 PREP_EVERY_TURNS = 24      # rotate one background refresh window every N turns,
                            # even during a busy screen
 # An unanswered user message is the one trigger the sprite cannot afford to
@@ -430,12 +436,50 @@ def heartbeat_is_due(now: float, last_turn_finished: float) -> bool:
     return now - last_turn_finished >= HEARTBEAT_S
 
 
-def heartbeat_note(turn_gap_s: float) -> str:
-    """兜底心跳轮专用提示词（实际下发给模型的那段）。
+def turn_wants_visual(
+    *,
+    screen_due: bool,
+    window_due: bool,
+    timing_due: bool,
+    fb: str,
+    return_due: bool,
+    reply_due: bool,
+    now: float,
+    last_visual_turn: float,
+    visual_recheck_s: float = VISUAL_RECHECK_S,
+) -> bool:
+    """本轮是否需要把**新截图**送进模型（带图轮 = 最贵的资源）。
 
-    心跳的职责是让模型**重新判断**，不是逼它说话——开口与否仍由 companion
-    的 kind 决定。所以这里不许出现「默认安静」：心跳是屏幕静止时唯一的
-    唤醒源，每 4 分钟命令一次闭嘴等于自我锁死（10-13 17:03 真实反馈）。
+    高频感知由 2s 本地哨兵免费完成；模型轮分两级：强视觉信号（屏幕内容
+    变化、窗口切换、操作流断点、用户开口、离开回来、回话临期）才附图；
+    纯心跳、后台维护、历史小页、续办、目标轮走无图文本轮——watching 的
+    计时事实（同屏停多久、卡没卡、窗口轨迹）是纯文本，足以支撑「此刻该
+    不该说话」的判断，屏幕没新内容时再送一遍图只是重复花钱。
+
+    新消息本身走 ``fb``（带图）；``reply_pending`` 不进这里——它不是唤醒
+    触发（循环闸门只认 reply_due），刚发消息后的心跳轮用文本回话即可。
+
+    无图轮不是闭嘴轮：模型仍可依据文本事实说话或续办，只是开口必须有
+    时间以外的具体事由（见 heartbeat_note）。静止超过
+    ``visual_recheck_s`` 兜底刷新一次，防止视觉上下文长期过期。
+    """
+    if screen_due or window_due or timing_due or fb or return_due or reply_due:
+        return True
+    return (now - last_visual_turn) >= visual_recheck_s
+
+
+def heartbeat_note(turn_gap_s: float) -> str:
+    """无图心跳轮专用提示词（实际下发给模型的那段）。
+
+    心跳让模型**重新核对**时间事实与后台状态，不是开口许可证。10-13 晚
+    实测：旧文案写「不需要先取证也能说的日常短话此刻就成立」，心跳轮随即
+    产出「九点多……今天这一天挺长的」——时间到了不构成事由（#10 定稿：
+    事由驱动，不是时间驱动），既打扰又白烧 token。
+
+    心跳轮不送新截图（turn_wants_visual 为 False 时 observation=None），
+    所以文案同时禁止回看历史画面：需要看现场就 quiet，等下一个带图轮。
+    但仍不许写「默认安静」——watching 事实可能真的报了「卡住/来回翻」，
+    那种文本事由成立时它应该说话。
 
     数字语义（issue #11 新发现 3）：``turn_gap_s`` 必须是**距上一轮判断真实
     经过的时间**（run() 在重置 last_turn 之前捕获的 now-last_turn），不能拿
@@ -444,22 +488,25 @@ def heartbeat_note(turn_gap_s: float) -> str:
     """
     gap_min = max(0.0, turn_gap_s) / 60.0
     return (
-        f"\n【这是兜底心跳轮，距上一轮判断已 {gap_min:.0f} 分钟，期间没有新的行为事件】"
-        "屏幕没动不代表没事发生：时间在走，他可能正在读、在想、在发呆或在等。"
-        "这类时刻是最自然的开口窗口，而且不需要先取证——"
-        "一句不取证也能说的日常短话（这个点还在弄这些、刚注意到的一件小事、"
-        "入夜/吃没吃这类一眼能看到的）此刻就成立。"
-        "但仍然由你判断：真有话就说，没有就 quiet，"
-        "不要用工作话题伪装闲聊，也不要为了填满空闲造话题。"
+        f"\n【这是兜底心跳轮，距上一轮判断已 {gap_min:.0f} 分钟，期间没有新的行为事件，本轮也没有新画面】"
+        "只重新核对时间事实（同一屏停多久、卡没卡、人在不在）与后台状态。"
+        "时间到了本身不是开口理由：开口必须有具体事由——他刚做的事、"
+        "已核实且此刻对他有用的结果、或对他手头那件事的一个真实想法。"
+        "单纯感慨时间、天色、辛苦（「这个点了」「今天挺长的」「入夜了」）"
+        "是填充不是内容，一律 quiet。"
+        "本轮不要回看历史画面；需要看现场才能判断就 quiet，等下一个有画面的轮次。"
+        "但计时事实若真的报了「卡住 / 来回翻 / 刚完成一个阶段」，"
+        "那是成立的事由，可以就这件具体事说一句。"
     )
 
 
 def heartbeat_note_if_due(*, heartbeat_due: bool, turn_gap_s: float, idle_s: float,
                           reply_pending: bool, fb: str, return_due: bool,
-                          continue_due: bool, goal_due: bool) -> str:
-    """本轮是否该附心跳专用的「自然开口窗口」提示；不该附时返回空串。
+                          continue_due: bool, goal_due: bool,
+                          has_visual: bool = True) -> str:
+    """无图心跳轮的专用提示；不该附时返回空串。
 
-    三种轮次明确排除（issue #11 新发现 4）：
+    明确排除：
 
     - ``reply_pending``：他在等回话，【优先回话】已经在本轮提示里，心跳鼓励
       叠加上去会让「必须回」和「可以自然开口」两套指令互相打架；
@@ -467,9 +514,18 @@ def heartbeat_note_if_due(*, heartbeat_due: bool, turn_gap_s: float, idle_s: flo
       的 watching 事实附的是「别打扰，回来再说」，这里若鼓励开口就是正面
       冲突，必须让位——away 心跳轮回落到后面的「默认安静」分支；
     - 有真实锚点的轮次（新反馈 fb / away 回归 return_due / 续办 / 目标）：
-      它们各有自己的提示词，心跳文案不叠加。
+      它们各有自己的提示词，心跳文案不叠加；
+    - ``has_visual``：带图心跳（900s 视觉兜底轮）有新 CURRENT 可看，走正常
+      带图轮提示；心跳文案明说「本轮没有新画面」，附图时附它就是说谎。
     """
-    if not heartbeat_due or reply_pending:
+    if not heartbeat_due:
+        return ""
+    # 注意：保持独立 if，不要把 reply_pending 并进布尔或表达式——
+    # test_wakeup_stays_bounded_to_the_deadline 全文件扫描该变量后接 or 的
+    # 写法，那只允许出现在唤醒闸门语义里。
+    if reply_pending:
+        return ""
+    if has_visual:
         return ""
     if fb or return_due or continue_due or goal_due:
         return ""
@@ -833,6 +889,10 @@ class VisualDirectBackend:
         self.feedback_since = time.time()
         self.max_segments = 12
         self.max_readonly_segments = 3
+        # True = 本轮不送新截图（无图心跳/维护轮）：_messages 把历史图像也
+        # 全部占位，防止「新图省了、上一轮那张图还在」继续花图像 token。
+        # _refresh_screen 在调查中收到新画面时清除（那一刻起本轮恢复带图）。
+        self.turn_without_visual = False
 
     def attach(self, session) -> None:
         self.session = session
@@ -890,6 +950,9 @@ class VisualDirectBackend:
         self._append_input(task_input, scene_update=True)
         self.screen_revision = sample.revision
         self.screen_sample = sample
+        # 新现场已经进上下文：本轮从无图轮升级为带图轮，_messages 不得再
+        # 把这张图占位掉（否则模型收到「现场更新」却看不到更新了什么）。
+        self.turn_without_visual = False
         return True
 
     def _messages(self) -> list[dict]:
@@ -903,16 +966,27 @@ class VisualDirectBackend:
         while messages and messages[0]["role"] == "user" and any(
                 block.get("type") == "tool_result" for block in messages[0]["content"]):
             messages.pop(0)
-        latest_image = max((index for index, message in enumerate(messages)
-                            if any(block.get("type") == "image" for block in message["content"])), default=-1)
+        # 无图轮（turn_without_visual）：连「最近一张图」一并占位，图像
+        # token 真正归零；工具结果里 history/inspect 拉回的旧图也走同一
+        # 分支被过滤（914-916 行的 tool_result image 过滤跟随 latest_image）。
+        latest_image = (-1 if getattr(self, "turn_without_visual", False)
+                        else max((index for index, message in enumerate(messages)
+                                  if any(block.get("type") == "image" for block in message["content"])), default=-1))
         reduced = []
         for index, message in enumerate(messages):
             content = []
             for block in message["content"]:
-                if block.get("type") == "image" and index < latest_image:
+                if block.get("type") == "image" and (
+                        getattr(self, "turn_without_visual", False) or index < latest_image):
                     content.append({"type": "text", "text": "Earlier visual is stored in VISTA; use history/inspect with its reference if needed."})
                 elif block.get("type") == "tool_result" and isinstance(block.get("content"), list):
-                    result_content = [item for item in block["content"] if item.get("type") != "image" or index >= latest_image]
+                    # 无图轮 latest_image=-1，单靠 index>=latest_image 恒真、
+                    # 拦不住工具结果里的图（history/inspect 回看会把旧图带回），
+                    # 必须再与 turn_without_visual 与一道。
+                    keep_image = (not getattr(self, "turn_without_visual", False)
+                                  and index >= latest_image)
+                    result_content = [item for item in block["content"]
+                                      if item.get("type") != "image" or keep_image]
                     content.append(dict(block, content=result_content))
                 else:
                     content.append(block)
@@ -1410,6 +1484,9 @@ def run() -> None:
     if initial_result.boundary is not None:
         maintenance.consume()
     last_thumb, last_turn, last_fb = None, time.time(), backend.feedback_since if live_screen else time.time()
+    # 上一次**真的把截图送进模型**的时刻：纯文本轮不刷它，静止屏幕靠
+    # VISUAL_RECHECK_S 兜底刷新视觉上下文。
+    last_visual_turn = time.time()
     turn_count = 0
     last_window = None
     desktop_pending, desktop_line = False, ""
@@ -1504,6 +1581,12 @@ def run() -> None:
             reply_age = pending_reply_age(now)
             reply_pending = reply_age is not None
             reply_due = reply_pending and (REPLY_DEADLINE_S - reply_age) <= MIN_GAP_S
+            # 两级模型轮：只有强视觉信号才把新截图送进模型；纯心跳/维护/
+            # 续办轮是无图文本轮（watching 计时事实是纯文本，照样够判断）。
+            visual_wanted = turn_wants_visual(
+                screen_due=screen_due, window_due=window_due, timing_due=timing_due,
+                fb=fb, return_due=return_due, reply_due=reply_due,
+                now=now, last_visual_turn=last_visual_turn)
             if not (screen_due or window_due or background_due or maintenance_due or history_due or timing_due or fb or heartbeat_due or return_due or continue_due or goal_due or reply_due):
                 continue
             if continue_due:
@@ -1537,13 +1620,20 @@ def run() -> None:
                     lead = ("这是兜底心跳轮：重新判断此刻的状态。"
                             "他已久未操作，可能暂离；别打扰，回来再说，"
                             "本轮只做不发声的后台准备。")
+                elif visual_wanted:
+                    # 900s 兜底的带图心跳：有新画面，正常重新感知，不发
+                    # 「时间到了可以说话」的许可证（文案见 hb 分支）。
+                    lead = "这是兜底心跳轮：屏幕久未真正变化，重新看一眼此刻的状态。"
                 else:
-                    lead = ("这是兜底心跳轮：重新判断此刻的状态，"
-                            "该准备就准备，也可能是自然开口的窗口。")
+                    lead = ("这是无图兜底心跳轮：本轮没有新画面，"
+                            "只核对时间事实与后台状态；时间到了不是开口理由。")
             else:
                 cycle = ""
                 lead = "这是回话轮：他在等你回答。" if reply_pending else "这是本次实时工作轮。"
-            text = ((fb + "\n") if fb else "") + lead + "先看 CURRENT，需要时?history 回看之前的画面；再用 companion 工具决定此刻说什么（或安静）。"
+            look_hint = ("先看 CURRENT，需要时?history 回看之前的画面；"
+                         if visual_wanted else
+                         "本轮没有新画面，也不要为了找话题回看历史画面；")
+            text = ((fb + "\n") if fb else "") + lead + look_hint + "再用 companion 工具决定此刻说什么（或安静）。"
             if reply_pending:
                 # Whoever triggered this turn, answering him is the whole job.
                 # Without this the model keeps its old objective, spends the turn
@@ -1571,7 +1661,8 @@ def run() -> None:
             hb_note = heartbeat_note_if_due(
                 heartbeat_due=heartbeat_due, turn_gap_s=turn_gap_s, idle_s=idle_s,
                 reply_pending=reply_pending, fb=fb, return_due=return_due,
-                continue_due=continue_due, goal_due=bool(goal_due))
+                continue_due=continue_due, goal_due=bool(goal_due),
+                has_visual=visual_wanted)
             if timing_why:
                 text += ("\n【为什么是现在】" + timing_why
                          + "。这是由行为事件边界触发的时刻（不是定时轮）。"
@@ -1601,18 +1692,32 @@ def run() -> None:
                      "if a concrete reversible action would help, offer it. Otherwise choose quiet. "
                      "Do not invent a topic, weather update, or generic activity report.")
             text += "\n" + agenda.context()
+            # 无图轮：不消费画面 revision——这一帧没送进模型，
+            # _refresh_screen/下一轮仍会把它作为新 CURRENT 送达；
+            # feedback_since 每次都刷（文字反馈本轮确实已附上）。
+            if isinstance(backend, VisualDirectBackend):
+                backend.turn_without_visual = not visual_wanted
             if sample is not None:
-                backend.screen_revision = sample.revision
-                backend.screen_sample = sample
+                if visual_wanted:
+                    backend.screen_revision = sample.revision
+                    backend.screen_sample = sample
                 backend.feedback_since = now
             offered_revision = agenda.revision
-            r = backend.run(runtime.prepare_input(Phase.STEP, public_text=text, observation=session.observe(vis)))
+            r = backend.run(runtime.prepare_input(
+                Phase.STEP, public_text=text,
+                observation=session.observe(vis) if visual_wanted else None))
             # 轮末再刷一次 last_turn（轮首 1516 行那次之外）：一轮可达
             # TURN_TIMEOUT_S=300s > HEARTBEAT_S=240s，只记轮首的话，超时轮
             # 结束的下一个 tick 立即满足心跳，背靠背再开一轮。以轮末为基准后，
             # 心跳间隔才真的是 240s；MIN_GAP_S 节流同理按轮末算。
             # 详见 heartbeat_is_due 的 docstring。
             last_turn = time.time()
+            # 带图轮记账：计划附图、或调查中 _refresh_screen 注入了新画面
+            # （会把 turn_without_visual 清成 False）都算视觉上下文已刷新。
+            visual_delivered = visual_wanted or (
+                isinstance(backend, VisualDirectBackend) and not backend.turn_without_visual)
+            if visual_delivered:
+                last_visual_turn = last_turn
             if not isinstance(backend, VisualDirectBackend) and r.boundary is not None:
                 agenda.mark_delivered(offered_revision)
             if live_screen is not None:

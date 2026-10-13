@@ -139,20 +139,21 @@ def test_heartbeat_stays_above_one_turn():
     assert brain.MIN_GAP_S < brain.HEARTBEAT_S
 
 
-def test_heartbeat_turn_is_not_instructed_to_default_to_quiet():
-    """这是本次最关键的一条：心跳缩短了，但提示词仍说「默认安静」的话，
-    等于每 4 分钟主动锁死自己一次，修复自我抵消。
+def test_heartbeat_turn_is_not_an_opening_license():
+    """10-13 晚实测翻车：旧文案写「不需要先取证也能说的日常短话此刻就成立」，
+    心跳轮立刻产出「九点多……今天这一天挺长的」——时间到了不构成事由。
 
-    提示词已抽成纯函数 brain.heartbeat_note()——直接测实际下发的文本，
-    不再从 run() 的 AST 里捞（捞 AST 会把「本来就该安静」的背景准备分支
-    一起卷进来，旧 helper 必须小心绕开两层陷阱）。
+    新契约两头都钉：不许「默认安静」（watching 真报卡住/来回翻时它该说），
+    也不许「不取证也能说」（时间感慨许可证），必须明写时间不是开口理由。
     """
     prompt = brain.heartbeat_note(240)
     assert "默认安静" not in prompt, \
-        "心跳轮还在要求默认安静——屏幕静止时它就是唯一触发源，会把精灵锁死"
-    assert "不需要先取证" in prompt or "不取证" in prompt, \
-        "心跳轮必须点明：自然开口不需要先取证，否则模型只会去找理由"
-    assert "时间在走" in prompt, "心跳轮要给出「屏幕没动不等于没事发生」的判据"
+        "计时事实真报卡住/来回翻时应该能说话，不能整体默认安静"
+    assert "不需要先取证" not in prompt and "不取证" not in prompt, \
+        "心跳轮不得再发「不取证也能说」的开口许可证（10-13 实测的废话来源）"
+    assert "时间到了本身不是开口理由" in prompt, \
+        "心跳轮必须明写：时间流逝不是开口事由"
+    assert "一律 quiet" in prompt, "时间/天色/辛苦感慨必须明确归为 quiet"
 
 
 def test_heartbeat_turn_lead_does_not_call_it_a_preparation_round():
@@ -209,15 +210,23 @@ _AWAY = watching.DEFAULTS["away_s"]          # 300s：watching.py 的离开阈�
 
 def _hb_kw(**over):
     kw = dict(heartbeat_due=True, turn_gap_s=240, idle_s=10.0, reply_pending=False,
-              fb="", return_due=False, continue_due=False, goal_due=False)
+              fb="", return_due=False, continue_due=False, goal_due=False,
+              has_visual=False)
     kw.update(over)
     return kw
 
 
 def test_heartbeat_window_opens_on_a_plain_quiet_heartbeat():
-    """人在、无回话义务、无锚点的心跳轮：自然开口窗口提示成立。"""
+    """人在、无回话义务、无锚点、无新画面的心跳轮：心跳提示成立（但提示本身
+    已不再是开口许可证，内容契约由 test_heartbeat_turn_is_not_an_opening_license 钉）。"""
     note = brain.heartbeat_note_if_due(**_hb_kw())
     assert note and "兜底心跳轮" in note
+
+
+def test_heartbeat_window_suppressed_when_visual_attached():
+    """900s 兜底的带图心跳有新 CURRENT 可看：心跳文案明说「本轮没有新画面」，
+    附图时附它就是说谎，必须让位给正常带图轮提示。"""
+    assert brain.heartbeat_note_if_due(**_hb_kw(has_visual=True)) == ""
 
 
 def test_heartbeat_window_suppressed_while_reply_pending():
@@ -256,6 +265,84 @@ def test_quiet_fallback_is_also_suppressed_for_reply_turns():
     src = _src(BRAIN)
     assert "elif not reply_pending and not (fb or return_due or continue_due or goal_due):" in src, \
         "默认安静分支必须显式排除 reply_pending，否则和优先回话自相矛盾"
+
+
+# ---------------------------------- 高频感知 / 低频带图：两级模型轮（10-13 晚反馈）
+
+_VW_BASE = dict(screen_due=False, window_due=False, timing_due=False, fb="",
+                return_due=False, reply_due=False,
+                now=1000.0, last_visual_turn=1000.0)
+
+
+@pytest.mark.parametrize("field", [
+    "screen_due", "window_due", "timing_due", "return_due", "reply_due",
+])
+def test_visual_tier_strong_signals_request_a_fresh_image(field):
+    """强视觉/强交互信号：必须带新截图（翻书、切窗、操作断点、回来、有人等回话）。"""
+    kw = dict(_VW_BASE)
+    kw[field] = True
+    assert brain.turn_wants_visual(**kw) is True
+
+
+def test_visual_tier_user_feedback_requests_a_fresh_image():
+    kw = dict(_VW_BASE); kw["fb"] = "他说了句话"
+    assert brain.turn_wants_visual(**kw) is True
+
+
+def test_visual_tier_plain_heartbeat_within_recheck_is_text_only():
+    """什么事都没有、只是 240s 心跳到了：无图文本轮。图像 token 归零，
+    watching 的计时事实是纯文本，照样能判断该不该说话。"""
+    kw = dict(_VW_BASE)
+    kw["now"] = kw["last_visual_turn"] + brain.HEARTBEAT_S
+    assert brain.turn_wants_visual(**kw) is False
+
+
+def test_visual_tier_still_screen_gets_visual_recheck_backstop():
+    """持续静止超过 VISUAL_RECHECK_S：即使没有任何事件也兜底刷新一次视觉，
+    防止上下文长期过期（读书翻页恰好像素差不足等漏报不至于无限延续）。"""
+    kw = dict(_VW_BASE)
+    kw["now"] = kw["last_visual_turn"] + brain.VISUAL_RECHECK_S
+    assert brain.turn_wants_visual(**kw) is True
+
+
+def test_visual_tier_constants_keep_perception_faster_than_image():
+    """心跳（重新判断/文本轮）必须明显密于视觉兜底：高频的是感知，不是带图。"""
+    assert brain.HEARTBEAT_S < brain.VISUAL_RECHECK_S
+    assert brain.VISUAL_RECHECK_S >= 600
+
+
+def test_step_observation_is_none_for_text_only_turn():
+    """run() 必须真的把无图轮的 observation 传成 None（而不是只算了个标志位）。"""
+    src = _src(BRAIN)
+    assert "observation=session.observe(vis) if visual_wanted else None" in src
+
+
+def test_backend_strips_all_images_from_text_only_turn():
+    """无图轮不只是省新截图：上一轮留在上下文里的图、工具结果里 history/inspect
+    拉回的图都必须占位，否则图像 token 照样花出去。"""
+    backend = brain.VisualDirectBackend({})
+    backend.history = [
+        {"role": "user", "content": [
+            {"type": "text", "text": "CURRENT source_id=old"},
+            {"type": "image", "source": {"type": "base64", "data": "AAA"}}]},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "c1", "name": "history"}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "c1", "content": [
+            {"type": "text", "text": "回看结果"},
+            {"type": "image", "source": {"type": "base64", "data": "BBB"}}]}]},
+    ]
+    backend.turn_without_visual = True
+    messages = backend._messages()
+    blocks = [b for m in messages for b in m["content"]]
+    tool_blocks = [b for m in messages for b in m["content"]
+                   if b.get("type") == "tool_result"]
+    assert not [b for b in blocks if b.get("type") == "image"], "无图轮上下文里不允许残留任何图像块"
+    assert all(not any(i.get("type") == "image" for i in b.get("content", []))
+               for b in tool_blocks), "工具结果里的旧图也必须被过滤"
+
+    backend.turn_without_visual = False
+    messages = backend._messages()
+    assert any(b.get("type") == "image" for m in messages for b in m["content"]), \
+        "标志清除后图像必须恢复，不能把带图轮也搞成无图"
 
 
 # ---------------------------------- companion 重启重放窗口收窄到气泡生命（d）
@@ -804,8 +891,8 @@ def test_startup_failure_of_one_child_does_not_abort_the_rest():
 # ---------------- P2-1/P2-2：away lead 分流 + 心跳调用点 kwarg 钉死 ----------------
 
 def test_away_heartbeat_lead_does_not_encourage_opening_a_window():
-    """away 轮 lead 不得再写「也可能是自然开口的窗口」（与 watching
-    「别打扰，回来再说」正面冲突）；非 away 分支保留该鼓励。"""
+    """10-13 晚反馈后心跳不再是开口许可证：away lead 不打扰；非 away 的无图
+    lead 也必须明说「时间到了不是开口理由」，任何 lead 都不得再鼓励自然开口。"""
     tree = ast.parse(_src(BRAIN))
     run_fn = next(n for n in ast.walk(tree)
                   if isinstance(n, ast.FunctionDef) and n.name == "run")
@@ -819,7 +906,10 @@ def test_away_heartbeat_lead_does_not_encourage_opening_a_window():
     away_leads = [s for s in leads if "别打扰" in s]
     assert len(away_leads) == 1, "away 分支必须有自己的不打扰 lead"
     assert "自然开口" not in away_leads[0]
-    assert any("自然开口" in s for s in leads), "非 away 心跳轮的开口窗口鼓励要保留"
+    assert not any("自然开口" in s for s in leads), \
+        "10-13 反馈后任何心跳 lead 都不得再写「自然开口窗口」"
+    assert any("时间到了不是开口理由" in s for s in leads), \
+        "无图心跳 lead 必须明写时间不是开口理由"
     # 分流条件必须真挂在 watching 的 away 阈值上，不能是写了却进不去的死分支
     assert 'away = idle_s >= watching.DEFAULTS["away_s"]' in _src(BRAIN)
 
