@@ -215,6 +215,14 @@ def brain_stamp() -> float:
              d / "agenda.py", d / "decision_engine.py",
              d / "desktopfacts.py", d / "chat_planner.py", d / "chat_facts.py",
              d / "weather.py", d / "historyfacts.py", PKG / "live.py"]
+    # 后端实现也是brain 的一部分，而且它坏掉的方式最隐蔽：改
+    # vista/backends/claude/factory.py 让 create_backend 多接一个参数，brain
+    # 就会 TypeError -> 静默降级到 direct 端点 -> 每轮 400，但这份列表当时只
+    # 盯着 desktop/，改动永远触发不了重启，精灵就这么带着400 跑了几小时。
+    backend = ROOT / "vista" / "backends" / "claude"
+    files += [backend / n for n in ("factory.py", "runner.py", "provider.py",
+                                    "lifecycle.py", "mcp_host.py", "mcp_bridge.py",
+                                    "preflight.py")]
     return max((p.stat().st_mtime for p in files if p.exists()), default=0.0)
 
 
