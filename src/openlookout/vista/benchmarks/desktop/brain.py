@@ -1453,22 +1453,26 @@ def _published_coach_offers(path: Path | None = None) -> set:
     的 coach 决策不得 mark_spoken（P2-4）。
     """
     path = path or OFFERS
-    return {(str(row.get("topic") or ""), float(row.get("t") or 0.0))
+    return {coach.published_key(row.get("topic"), row.get("t"))
             for row in _cached_jsonl_rows(path)
             if row.get("result") == "shown"}
 
 
 def sync_coach(ledger, session, *, seen_decisions: int, now: float,
                surface: bool, outcomes_path: Path | None = None,
-               offers_path: Path | None = None) -> int:
+               offers_path: Path | None = None, new_stay: bool = False) -> int:
     """每轮 companion 决策后调用：topic 约定 → 确定性账本迁移 + outcomes 回流。
 
     接线刻意薄：模型判断「这件事算不算某模式的证据」与教练话措辞；状态迁移
     全部在 coach.py 的纯函数里。surface 是本轮是否处在允许教练开口的时刻
     （断点/等待；非流中、非离开、非回话轮），由主循环的时机信号算出。
-    发布核验用 offers.jsonl 的 shown 行，outcomes/offers 都按 mtime/size
+    new_stay 表示观察到「人已离开」：上一次停留结束，清除段内开口抑制。
+    发布核验用 offers.jsonl 的 shown 行（两侧同一 coach.published_key
+    规范化，避免带空白 topic 误判），outcomes/offers 都按 mtime/size
     缓存，避免每轮 O(n) 全量扫。返回已消费到的 decisions 下标。
     """
+    if new_stay:
+        coach.reset_stay(ledger)
     decisions = list(getattr(session, "decisions", [])[seen_decisions:])
     published = _published_coach_offers(offers_path)
     for row in coach.apply_decisions(ledger, decisions, now,
@@ -1839,7 +1843,8 @@ def run() -> None:
             # 拒绝/超时；随后合并围栏块并持久化（先迁移后存盘，块与账本一致）。
             coach_seen = sync_coach(coach_ledger, session, seen_decisions=coach_seen,
                                     now=last_turn,
-                                    surface=coach.surface_allowed(**coach_gate)[0])
+                                    surface=coach.surface_allowed(**coach_gate)[0],
+                                    new_stay=coach_gate["away"])
             save_guide(runtime, coach_ledger)
             save_current(session)
             print(f"[brain] turn done boundary={r.boundary} decisions={len(session.decisions)}", flush=True)

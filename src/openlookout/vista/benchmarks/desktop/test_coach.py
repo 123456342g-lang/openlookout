@@ -315,13 +315,68 @@ def test_late_accepted_does_not_flip_cooldown_into_retired():
 
 
 def test_acknowledged_outcome_does_not_move_observing():
-    """态度不明的 outcome 对 observing 同样不迁移。"""
+    """态度不明的 outcome 对 observing 不迁移状态（但消耗本段开口机会，见下条）。"""
     ledger = coach.new_ledger()
     _ripe(ledger)
     state = coach.apply_outcome(ledger, event_id="a1", topic="coach:" + PID,
                                 outcome="acknowledged", now=NOW + 10)
     assert state == coach.OBSERVING
     assert ledger["patterns"][PID]["spoken_at"] is None
+    assert ledger["patterns"][PID]["offered_at"] == NOW + 10
+
+
+@pytest.mark.parametrize("result", ["acknowledged", "responded"])
+def test_ambiguous_outcome_consumes_this_stay_only(result):
+    """P2-2 口径：blocked 气泡收到态度不明回应 → 保持 observing，不冷却不退休，
+    但同一次停留/工作段内不再获得第二次资格（offered_in_session）；
+    人离开回来（reset_stay＝新一段）才翻篇。"""
+    ledger = coach.new_ledger()
+    _ripe(ledger)
+    # blocked 气泡（流中硬闯，但发布点不查账本，气泡已上屏）
+    coach.apply_decisions(ledger, [_speak(PID)], NOW, surface=False)
+    state = coach.apply_outcome(ledger, event_id="a1", topic="coach:" + PID,
+                                outcome=result, now=NOW + 30)
+    assert state == coach.OBSERVING
+    pattern = ledger["patterns"][PID]
+    assert pattern["state"] == coach.OBSERVING and pattern["spoken_at"] is None
+    assert pattern["offered_at"] == NOW + 30
+    # 同一段内即便又攒到新摩擦实例，也不给第二次资格
+    coach.add_instance(ledger, PID, NOW + 60, "同一段内又一次摩擦")
+    ok, reason = coach.can_speak(ledger, PID, NOW + 70)
+    assert not ok and reason == "offered_in_session"
+    assert PID not in dict(coach.eligible_patterns(ledger, NOW + 70))
+    assert PID not in coach.surface_note(ledger, NOW + 70, boundary=True)
+    # 硬闯开口同样被 offered_in_session 拦下（真因保留）
+    blocked = coach.apply_decisions(ledger, [_speak(PID)], NOW + 71, surface=True)
+    assert blocked[0]["reason"] == "offered_in_session"
+    assert ledger["patterns"][PID]["state"] == coach.OBSERVING
+    # 新的一段（人离开过）：抑制翻篇，资格恢复，终态不受 reset 影响
+    assert coach.reset_stay(ledger) == 1
+    ok, reason = coach.can_speak(ledger, PID, NOW + 400)
+    assert ok and reason == "eligible"
+    coach.reset_stay(ledger)  # 空转不报错
+    # retired/cooldown 不被 reset_stay 复活
+    coach.mark_spoken(ledger, PID, NOW + 410)
+    coach.cooldown(ledger, PID, NOW + 420)
+    coach.reset_stay(ledger)
+    assert coach.can_speak(ledger, PID, NOW + 430)[1] == "muted_after_cooldown"
+
+
+def test_offered_at_survives_render_parse_and_legacy_block():
+    ledger = coach.new_ledger()
+    _ripe(ledger)
+    coach.apply_outcome(ledger, event_id="a2", topic="coach:" + PID,
+                        outcome="responded", now=NOW)
+    restored = coach.parse_block(coach.render_block(ledger, now=NOW + 1))
+    assert restored["patterns"][PID]["offered_at"] == NOW
+    assert coach.can_speak(restored, PID, NOW + 1)[1] == "offered_in_session"
+    # 旧块（没有 offered_at 字段）仍能解析，语义为无段内抑制
+    old = (coach.BLOCK_OPEN +
+           f"\n### observing — x\n- [{PID}] state=observing spoken_at=0 updated={int(NOW)} instances=2\n"
+           f"  - t={int(NOW - 10)}｜a\n  - t={int(NOW - 5)}｜b\n" + coach.BLOCK_CLOSE)
+    legacy = coach.parse_block(old)["patterns"][PID]
+    assert legacy["offered_at"] is None
+    assert coach.can_speak(coach.parse_block(old), PID, NOW + 1)[0]
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -505,6 +560,73 @@ def test_suppressed_decision_does_not_mark_spoken():
         published={("coach:" + PID, NOW)})
     assert blocked == []
     assert ledger["patterns"][PID]["state"] == coach.SPOKEN
+
+
+def test_published_key_normalizes_topic_whitespace():
+    """P2-1：判重键两侧同一规范化——决策 topic 带前后空白，落盘 strip 过，
+    必须仍是同一个键（真上屏气泡不得被误判 suppressed）。"""
+    assert coach.published_key(" coach^x ", NOW) == coach.published_key("coach^x", NOW)
+    assert coach.published_key("coach:rip", NOW) == ("coach:rip", float(NOW))
+    # parse 侧本就 strip：' coach^x ' 仍是合法 adopt
+    assert coach.parse_topic(" coach^x ", "quiet") == ("adopt", "x")
+
+
+def test_published_offers_whitespace_topic_matches_shown(tmp_path):
+    """brain 侧：offers.jsonl 落盘 'coach^x'，决策入参 ' coach^x ' 也识别为 shown。"""
+    offers = tmp_path / "offers.jsonl"
+    offers.write_text(json.dumps({
+        "id": "o1", "t": NOW, "topic": "coach^x", "result": "shown"}) + "\n",
+        encoding="utf-8")
+    published = brain._published_coach_offers(offers)
+    assert coach.published_key(" coach^x ", NOW) in published
+
+
+def test_speak_with_whitespace_topic_recognized_as_shown(tmp_path):
+    """端到端：决策 topic='  coach:<id>  '、offers 落盘 strip 值，断点轮应
+    正常 mark_spoken，不产生 suppressed_by_help_layer。"""
+    ledger = coach.new_ledger()
+    _ripe(ledger)
+    offers = tmp_path / "offers.jsonl"
+    offers.write_text(json.dumps({
+        "id": "o1", "t": NOW, "topic": "coach:" + PID, "text": "s",
+        "result": "shown"}) + "\n", encoding="utf-8")
+    session = SimpleNamespace(decisions=[
+        {"kind": "companion", "topic": "  coach:" + PID + "  ", "say": "s",
+         "t": NOW, "state": "锚点"}])
+    seen = brain.sync_coach(ledger, session, seen_decisions=0, now=NOW, surface=True,
+                            outcomes_path=tmp_path / "none.jsonl", offers_path=offers)
+    assert seen == 1
+    assert ledger["patterns"][PID]["state"] == coach.SPOKEN
+    assert ledger["blocked"] == []
+
+
+def test_sync_coach_new_stay_resets_offer_suppression(tmp_path, monkeypatch):
+    """P2-2 接线：away 轮传 new_stay=True 后，段内抑制（offered_at）清除。"""
+    monkeypatch.setattr(brain, "PERCEIVE", tmp_path)
+    ledger = coach.new_ledger()
+    _ripe(ledger)
+    outcomes = tmp_path / "outcomes.jsonl"
+    offers = tmp_path / "offers.jsonl"
+    offers.write_text(json.dumps({
+        "id": "o1", "t": NOW, "topic": "coach:" + PID, "text": "s",
+        "result": "shown"}) + "\n", encoding="utf-8")
+    session = SimpleNamespace(decisions=[
+        {"kind": "companion", "topic": "coach:" + PID, "say": "s",
+         "t": NOW, "state": "锚点"}])
+    # 流中轮：气泡上屏但 blocked；随后态度不明 outcome → 段内抑制
+    seen = brain.sync_coach(ledger, session, seen_decisions=0, now=NOW, surface=False,
+                            outcomes_path=outcomes, offers_path=offers)
+    outcomes.write_text(json.dumps(_outcome("a1", PID, "acknowledged", t=NOW + 30))
+                        + "\n", encoding="utf-8")
+    brain.sync_coach(ledger, session, seen_decisions=seen, now=NOW + 31, surface=True,
+                     outcomes_path=outcomes, offers_path=offers)
+    assert ledger["patterns"][PID]["offered_at"] == NOW + 30
+    assert coach.can_speak(ledger, PID, NOW + 32)[1] == "offered_in_session"
+    # 人离开了（away 轮）：new_stay=True，回到机前后资格恢复
+    brain.sync_coach(ledger, session, seen_decisions=seen, now=NOW + 400, surface=False,
+                     outcomes_path=outcomes, offers_path=offers, new_stay=True)
+    ok, reason = coach.can_speak(ledger, PID, NOW + 401)
+    assert ok and reason == "eligible"
 
 
 def test_blocked_list_is_bounded_cyclic():

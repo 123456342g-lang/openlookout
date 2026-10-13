@@ -64,7 +64,8 @@ BLOCK_CLOSE = "<!-- /coach:auto -->"
 _META_PREFIX = "<!-- coach-meta: "
 _HEADER_RE = re.compile(
     r"^- \[(?P<id>[^\]]+)\] state=(?P<state>[a-z]+) "
-    r"spoken_at=(?P<spoken>-?\d+) updated=(?P<updated>\d+)"
+    r"spoken_at=(?P<spoken>-?\d+)(?: offered_at=(?P<offered>-?\d+))? "
+    r"updated=(?P<updated>\d+)"
     r"(?: instances=(?P<instances>\d+))?(?:｜(?P<note>.*))?$"
 )
 _INSTANCE_RE = re.compile(r"^  - t=(?P<t>-?\d+)｜(?P<anchor>.*)$")
@@ -164,7 +165,7 @@ def add_instance(ledger: dict, pattern_id: str, now: float, anchor: str) -> bool
     pattern = patterns.get(pattern_id)
     if pattern is None:
         pattern = {"id": pattern_id, "state": OBSERVING, "instances": [],
-                   "spoken_at": None, "updated_at": now, "note": ""}
+                   "spoken_at": None, "offered_at": None, "updated_at": now, "note": ""}
         patterns[pattern_id] = pattern
     if pattern["state"] == RETIRED:
         return False
@@ -200,6 +201,11 @@ def can_speak(ledger: dict, pattern_id: str, now: float,
         return False, "no_fresh_instance"
     if count < min_instances:
         return False, "below_threshold"
+    if pattern.get("offered_at"):
+        # 本停留段内一次气泡已上屏、用户只给了态度不明的回应（看见/关掉/打字
+        # 但没接受也没拒绝）：开口机会已消耗，同一段内不给第二次资格，直到
+        # reset_stay（人离开过＝新的一段）。
+        return False, "offered_in_session"
     return True, "eligible"
 
 
@@ -214,9 +220,25 @@ def mark_spoken(ledger: dict, pattern_id: str, now: float, note: str = "") -> bo
     now = float(now)
     pattern["state"] = SPOKEN
     pattern["spoken_at"] = now
+    pattern.pop("offered_at", None)
     pattern["note"] = _clean_note(note)
     _touch(pattern, now)
     return True
+
+
+def reset_stay(ledger: dict, now: float | None = None) -> int:
+    """结束当前停留段：清除所有「本段已开口一次」的段内抑制（offered_at）。
+
+    brain 在观察到「人已离开」（away）的轮次调用——下一次回到机前算新的一
+    段，态度不明的模式重新获得资格。终态（retired/cooldown/spoken）不受影响，
+    它们有各自的机制兜底。返回清除条数。
+    """
+    cleared = 0
+    for pattern in ledger.get("patterns", {}).values():
+        if pattern.get("offered_at"):
+            pattern.pop("offered_at", None)
+            cleared += 1
+    return cleared
 
 
 def retire(ledger: dict, pattern_id: str, now: float, note: str = "") -> bool:
@@ -341,6 +363,13 @@ def apply_outcome(ledger: dict, *, event_id, topic: str, outcome: str, now: floa
         retire(ledger, pattern_id, now, note)
     elif outcome in _OUTCOME_TO_COOLDOWN:
         cooldown(ledger, pattern_id, now, note)
+    elif outcome in ("acknowledged", "responded") and state_before == OBSERVING:
+        # 态度不明（看见/关掉气泡，或打字回话但没接受）：不冷却也不退休，但
+        # 这次上屏的气泡已消耗本段开口机会——盖 offered_at，同一次停留内
+        # can_speak 返回 offered_in_session，不给第二次资格（reset_stay 解除）。
+        if not pattern.get("offered_at"):
+            pattern["offered_at"] = now
+            _touch(pattern, now)
     prune(ledger, now)
     return pattern["state"]
 
@@ -378,6 +407,16 @@ def decision_anchor(decision: dict) -> str:
         if anchor:
             return anchor
     return ""
+
+
+def published_key(topic, moment) -> tuple:
+    """offers shown 核验的唯一判重键 ``(topic, t)``，决策侧与落盘侧共用。
+
+    session 落盘的 topic 是 strip 过的，而决策入参可能照抄带前后空白的
+    topic（模型复制提示词时常见）；两侧都过这里规范化，真上屏气泡才不会
+    被误判为 suppressed_by_help_layer。
+    """
+    return (str(topic or "").strip(), float(moment or 0.0))
 
 
 def _record_blocked(ledger: dict, now: float, pattern_id: str, reason: str) -> dict:
@@ -456,7 +495,7 @@ def apply_decisions(ledger: dict, decisions: Iterable[dict], now: float, *,
                 _record_denylist(ledger, pattern_id, now)
             blocked.append(_record_blocked(ledger, now, pattern_id, reason))
             continue
-        if published is not None and (str(decision.get("topic") or ""), moment) not in published:
+        if published is not None and published_key(decision.get("topic"), moment) not in published:
             blocked.append(_record_blocked(ledger, now, pattern_id,
                                            "suppressed_by_help_layer"))
             continue
@@ -564,7 +603,9 @@ def render_block(ledger: dict, *, now: float | None = None) -> str:
     lines = [
         BLOCK_OPEN,
         "## 隐性教练账本（机器围栏块：由代码维护，只读勿手改；全量重写 GUIDE.md 时本块自动剥离/合并）",
-        "四态 observing/spoken/retired/cooldown；实例 7 天过期、开口需 >=2 实例、每模式只说一次。",
+        "四态 observing/spoken/retired/cooldown；实例 7 天过期、开口需 >=2 实例、每模式只说一次。"
+        "态度不明的回应（看见/关掉气泡、打字但没接受）不迁移状态，但本次停留内不再给第二次资格，"
+        "人离开回来（新的一段）才翻篇。",
         "topic 约定：开口 coach:<id>（companion/offer）；quiet+coach:<id> 记实例（state 写锚点）；"
         "观察到用户已自改用同法 quiet+coach^<id>。id 为稳定小写短名（<=18 字符）。",
     ]
@@ -576,6 +617,7 @@ def render_block(ledger: dict, *, now: float | None = None) -> str:
         for pattern_id, pattern in items:
             note = _clean_note(pattern.get("note") or "")
             head = (f"- [{pattern_id}] state={state} spoken_at={_fmt_time(pattern.get('spoken_at'))} "
+                    f"offered_at={_fmt_time(pattern.get('offered_at'))} "
                     f"updated={_fmt_time(pattern.get('updated_at'))} instances={len(pattern.get('instances', []))}"
                     + (f"｜{note}" if note else ""))
             lines.append(head)
@@ -621,8 +663,11 @@ def parse_block(text: str) -> dict | None:
                 current = None
                 continue
             spoken_at = int(match.group("spoken"))
+            offered_raw = match.group("offered")
+            offered_at = int(offered_raw) if offered_raw is not None else 0
             current = {"id": pattern_id, "state": state, "instances": [],
                        "spoken_at": spoken_at or None,
+                       "offered_at": offered_at or None,
                        "updated_at": float(match.group("updated")),
                        "note": (match.group("note") or "").strip()}
             ledger["patterns"][pattern_id] = current
