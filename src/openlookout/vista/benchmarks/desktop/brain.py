@@ -1,4 +1,7 @@
-"""灏忕簿鐏电殑澶ц剳锛氫竴涓暱鏈熻繍琛岀殑 VISTA 浼氳瘽銆?- 鍚屼竴涓ā鍨嬩細璇濇寔缁瓨鍦紱VISTA 淇濆瓨姣忎竴甯у師濮嬬敾闈紙瑙嗚璁板繂锛夛紝妯″瀷鐢?history / inspect 鍥炵湅銆?- 姣忔灞忓箷鏈夋槑鏄惧彉鍖栵紝灏变互 STEP 杞鍠傜粰鍚屼竴涓細璇濓紱妯″瀷鐢?companion 宸ュ叿鍐冲畾鈥滆璇?鎻愯/瀹夐潤鈥濄€?- GUIDE.md锛堝鐢ㄦ埛鐨勯暱鏈熺悊瑙ｏ級璺ㄩ噸鍚繚鐣欏湪 sprite_home/companion/GUIDE.md锛?  鐢ㄦ埛鐨勫弽棣堬紙濂界殑/涓嶇敤/绾犳锛変互鏂囧瓧杩藉姞杩涗笅涓€杞紝鍙綔涓烘潈琛′緷鎹紝涓嶆槸鍛戒护銆?- 涓婁笅鏂囧揩婊℃椂鐢?VISTA 鑷繁浜ゆ帴锛屼笉閲嶅紑浼氳瘽锛涜繘绋嬪穿婧冩墠閲嶅惎銆?python -m vista.benchmarks.desktop.brain
+"""小精灵的大脑：一个长期运行的 VISTA 会话。
+- 同一个模型会话持续存在；VISTA 保存每一帧原始画面（视觉记忆），模型可history / inspect 回看。
+- 每次屏幕有明显变化，就以 STEP 轮次喂给同一个会话；模型用companion 工具决定“说话/提议/安静”。
+- GUIDE.md（对用户的长期理解）跨重启保留在 sprite_home/companion/GUIDE.md?  用户的反馈（好的/不用/纠正）以文字追加进下丢轮，只作为权衡依据，不是命令?- 上下文快满时?VISTA 自己交接，不重开会话；进程崩溃才重启?python -m vista.benchmarks.desktop.brain
 """
 from __future__ import annotations
 
@@ -21,8 +24,8 @@ PERCEIVE = HOME / "perceive"
 FEEDBACK = PERCEIVE / "feedback.jsonl"
 OFFERS = PERCEIVE / "offers.jsonl"
 PROJECT = Path(__file__).resolve().parents[3]
-CHANGE_MIN = 0.01          # 灞忓箷缂╃暐鍥惧钩鍧囧樊寮傝秴杩?1% 灏遍噸鏂板垽鏂?MIN_GAP_S = 5              # 椤甸潰鍒囨崲鍚庡敖蹇窡涓婏紱鑺傛祦浜ょ粰妯″瀷鍒ゆ柇鍜岃緭鍑洪椄
-HEARTBEAT_S = 900          # 鍏滃簳蹇冭烦锛氫富瑙﹀彂宸蹭氦缁?sprite/proactive/timing.py 鐨勪簨浠惰竟鐣岀畻娉?PREP_EVERY_TURNS = 24      # rotate one background scan even during a busy screen
+CHANGE_MIN = 0.01          # 屏幕缩略图平均差异超?1% 就重新判?MIN_GAP_S = 5              # 页面切换后尽快跟上；节流交给模型判断和输出闸
+HEARTBEAT_S = 900          # 兜底心跳：主触发已交?sprite/proactive/timing.py 的事件边界算?PREP_EVERY_TURNS = 24      # rotate one background scan even during a busy screen
 # Use the configured provider model.  Hard-coding an alias here made Claude
 # return a 400 when the endpoint did not publish that model id.
 ACTIVE_MODEL = "mimo-v2.6-flash"
@@ -106,7 +109,7 @@ RESIDUAL_CACHE: dict = {"at": 0.0, "text": ""}
 
 
 def _tail_jsonl(path: Path, window_bytes: int = 400_000) -> list[dict]:
-    """璇昏褰曞櫒姝ｅ湪鍐欑殑鏂囦欢锛氬叡浜 + 瀹瑰繊琚埅鏂殑鍗婅锛涗换浣曞け璐ラ兘杩斿洖绌鸿〃锛屼笉褰卞搷澶ц剳銆。"""
+    """读记录器正在写的文件：共享读 + 容忍被截断的半行；任何失败都返回空表，不影响大脑〡。"""
     try:
         with open(path, "rb") as handle:
             handle.seek(0, 2)
@@ -151,7 +154,7 @@ def ops_events(*, refresh_s: float = 5.0, now: float | None = None) -> list[dict
         from sprite.proactive import timing as _tm
         events = _tm.normalize(_tail_jsonl(OPS))
     except Exception as exc:
-        print(f"[brain] timing events 涓嶅彲鐢細{exc!r}", flush=True)
+        print(f"[brain] timing events 不可用：{exc!r}", flush=True)
     if events:
         TIMING_CACHE["at"] = now
         TIMING_CACHE["events"] = events
@@ -159,22 +162,22 @@ def ops_events(*, refresh_s: float = 5.0, now: float | None = None) -> list[dict
 
 
 def timing_tracker():
-    """鎯版€у垱寤烘椂鏈鸿拷韪櫒锛涘鍏ュけ璐ラ€€鍖栨垚 None锛堝ぇ鑴戠収甯歌窇锛屽彧鏄洖鍒版棫鐨勫績璺宠Е鍙戯級銆?
-    timing v2锛氭椂鏁堟寜銆屾垜浠涓€娆＄湅瑙佽繖鏉′簨浠躲€嶇殑鏃跺埢绠楋紝鑰屼笉鏄畠鑷О鍙戠敓鐨勬椂鍒烩€斺€?    璁板綍鍣ㄦ妸 focus 鍖洪棿鍐欏湪缁撴潫鏃跺嵈鐢ㄥ紑濮嬫椂鍒诲仛 ts锛屼笉杩欐牱鏀癸紝涓€涓垰鍒氭墠鍙鍔ㄧ殑杈圭晫浼氳绠楁垚杩囨湡銆?    """
+    """惰创建时机追踪器；导入失败化成 None（大脑照常跑，只是回到旧的心跳触发）?
+    timing v2：时效按「我们第丢次看见这条事件的时刻算，而不是它自称发生的时刻?    记录器把 focus 区间写在结束时却用开始时刻做 ts，不这样改，丢个刚刚才可行动的边界会被算成过期?    """
     global TIMING_TRACKER
     if TIMING_TRACKER is None:
         try:
             from sprite.proactive.timing import Tracker as _T
             TIMING_TRACKER = _T()
         except Exception as exc:
-            print(f"[brain] timing 涓嶅彲鐢紝鍥為€€鍒板績璺宠Е鍙戯細{exc!r}", flush=True)
+            print(f"[brain] timing 不可用，回到心跳触发：{exc!r}", flush=True)
             TIMING_TRACKER = False
     return TIMING_TRACKER or None
 
 
 def residual_fact(*, window_min: float = 90.0, refresh_s: float = 5.0, now: float | None = None) -> str:
-    """銆愭鍒荤殑寮傚父搴?s_t銆戯細鏈湴鍙绠楃殑娉ㄦ剰鍔涗俊鍙凤紝鍙湅鏈満琛屼负娴佹按锛屼笉璇诲睆銆佷笉璋冪敤妯″瀷銆?
-    s_t = -log2 P(搴旂敤_t | 搴旂敤_(t-1)) - log2 P(绫诲瀷_t)锛屼竴闃堕┈灏斿彲澶?+ 0.5 骞虫粦锛?    棰勬湡妯″瀷鐢卞悓涓€娈垫祦姘寸幇鍦哄鍑猴紝鎵€浠?P 鏈夌増鏈€佸彲澶嶇畻锛屼笉鏄ā鍨嬪湪绾胯嚜鐢辫閲忋€?    s_t 楂?= 鏈満骞虫椂涓嶈繖鏍凤紱s_t 浣?= 涓€鍒囩収甯搞€傝繖鏄敞鎰忓姏淇″彿锛屼笉鏇挎ā鍨嬪喅瀹氬紑涓嶅紑鍙ｃ€?    """
+    """【此刻的异常?s_t】：本地可复算的注意力信号，只看本机行为流水，不读屏、不调用模型?
+    s_t = -log2 P(应用_t | 应用_(t-1)) - log2 P(类型_t)，一阶马尔可?+ 0.5 平滑?    预期模型由同丢段流水现场学出，扢?P 有版本可复算，不是模型在线自由裁量?    s_t ?= 本机平时不这样；s_t ?= 丢切照常这是注意力信号，不替模型决定开不开口?    """
     now = now or time.time()
     if now - RESIDUAL_CACHE["at"] < refresh_s and RESIDUAL_CACHE["text"]:
         return RESIDUAL_CACHE["text"]
@@ -217,20 +220,20 @@ def residual_fact(*, window_min: float = 90.0, refresh_s: float = 5.0, now: floa
         if len(interesting) == 3:
             break
     since = min((now - event["t"] for event in scored if event["s"] >= 7), default=None)
-    lines = [f"銆愭鍒荤殑寮傚父搴?s_t銆戞湰鍦板彲澶嶇畻锛歴_t = -log2 P(搴旂敤|涓婁竴搴旂敤) - log2 P(绫诲瀷)锛"
-             f"棰勬湡妯″瀷鐢辨湰鏈烘渶杩?{int(window_min)} 鍒嗛挓、{len(window)} 鏉¤涓烘祦姘寸幇鍦哄鍑猴紙涓嶆槸妯″瀷鐚滅殑锛夈€",
+    lines = [f"【此刻的异常?s_t】本地可复算：s_t = -log2 P(应用|上一应用) - log2 P(类型)。"
+             f"预期模型由本机最?{int(window_min)} 分钟{len(window)} 条行为流水现场学出（不是模型猜的）。",
              f"褰撳墠 s_t={latest['s']:.2f}｜{latest['app']}｜{latest['type']}"
              + (f"{latest['title']}" if latest["title"] else "")]
     if interesting:
-        lines.append("鏈€杩?45 鍒嗛挓鏈€涓嶅甯哥殑鏃跺埢锛堣秺楂樿秺涓嶅儚鏈満骞虫椂鐨勬牱瀛愶級锛")
+        lines.append("最近 45 分钟里不寻常的时刻（越高越不像本机平时的样子）。")
         for event in interesting:
             stamp = time.strftime("%H:%M:%S", time.localtime(event["t"]))
             lines.append(f"- {stamp} s_t={event['s']:.2f}｜{event['app']}｜{event['type']}"
                          + (f"｜{event['title']}" if event["title"] else ""))
     if since is not None:
-        lines.append(f"璺濅笂涓€娆℃槑鏄惧紓甯哥害 {since / 60:.0f} 鍒嗛挓銆")
-    lines.append("s_t 鍙槸缁熻淇″彿锛屼笉鏄粨璁猴細s_t 楂樿鏄庢鍒诲€煎緱鐪嬩竴鐪兼槸鍚︿笌鐢ㄦ埛褰撲笅鐩爣鏈夊叧锛"
-                 "s_t 浣庝笉鑳芥帓闄ら噸澶嶅姵鍔ㄣ€佹湭瑙ｅ喅鐩爣鎴栬嚜鐒朵氦娴佹満浼氾紝浠嶉渶缁撳悎璇箟璇佹嵁鍒ゆ柇銆備笉瑕佷负浜嗘寚鏍囧紑鍙ｏ紝涔熶笉瑕佹妸鍒嗘暟蹇电粰鐢ㄦ埛銆")
+        lines.append(f"距上次明显异常约 {since / 60:.0f} 分钟。")
+    lines.append("s_t 只是统计信号，不是结论：s_t 高说明此刻得看一眼是否与用户当下目标有关。"
+                 "s_t 低不能排除重复劳动未解决目标或自然交流机会，仍需结合语义证据判断。不要为了指标开口，也不要把分数念给用户。")
     text = "\n".join(lines)
     previous_s = RESIDUAL_CACHE.get("logged_s")
     if now - RESIDUAL_CACHE.get("logged_at", 0.0) >= 20 or previous_s is None or abs(latest["s"] - previous_s) >= 2.0:
@@ -270,7 +273,7 @@ _DOC_EXT = {".md", ".txt", ".doc", ".docx", ".pdf", ".xls", ".xlsx", ".csv", ".p
 
 
 def _is_user_file(path: str) -> bool:
-    """鎺掗櫎搴旂敤鍐呴儴缂撳瓨/鏃ュ織锛圵XWork 鐨?CEF cache銆乴eveldb銆乲v.db-wal 涔嬬被锛夆€斺€?    杩欎簺鏄€屾枃浠朵簨浠躲€嶉噷鏈€澶х殑鍋囬槼鎬ф潵婧愶紝娣疯繘鏉ヤ細鎶婂簲鐢ㄨ嚜宸辩殑鍐欏叆褰撴垚鐢ㄦ埛鐨勫伐浣溿€"""
+    """排除应用内部缓存/日志（WXWork / CEF cache、leveldb、kv.db-wal 之类）?    这些是「文件事件」里最大的假阳性来源，混进来会把应用自己的写入当成用户的工作。"""
     if not path:
         return False
     low = path.replace("\\", "/").lower()
@@ -286,8 +289,10 @@ def _is_user_file(path: str) -> bool:
 
 def long_term_fact(*, days: float = 7.0, refresh_s: float = 600.0,
                    now: float | None = None) -> str:
-    """銆愰暱鏈熸ā寮忋€戯細浠庢暣鏈烘搷浣滃巻鍙诧紙涓嶆槸灏忕簿鐏佃嚜宸遍偅 90 绉掔獥鍙ｏ級閲岃繛缁劅鐭ャ€"
-    杩欐槸銆屾寔缁富鍔ㄦ劅鐭ャ€嶇殑璁板繂閭ｄ竴鍗婏細鍙湅鏈満娴佹按銆佹湰鍦板彲澶嶇畻銆佷笉璇诲睆銆佷笉璋冩ā鍨嬨€?    缁欏嚭鏈€杩戝嚑澶╃殑鏃堕棿鍘诲悜涓庡弽澶嶆敼鍔ㄧ殑鏂囦欢鈥斺€斿畠浠槸鍒ゆ柇銆岀敤鎴风幇鍦ㄥ湪鍋氫粈涔堛€?    鍗″湪鍝€佸€间笉鍊煎緱甯€嶇殑鏈€寮洪敋鐐广€傛瘡 refresh_s 绉掗噸绠椾竴娆°€?    """
+    """【长期模式：从整机操作历史（不是小精灵自己那 90 秒窗口）里连续感知。"
+    这是「持续主动感知的记忆那一半：只看本机流水、本地可复算、不读屏、不调模型。
+    给出最近几天的时间去向与反复改动的文件——它们是判断「用户现在在做什么」
+    「卡在哪」「不值得帮」的强锚点，每 refresh_s 秒重算一次。    """
     now = now or time.time()
     if now - LONG_TERM_CACHE["at"] < refresh_s and LONG_TERM_CACHE["text"]:
         return LONG_TERM_CACHE["text"]
@@ -329,15 +334,15 @@ def long_term_fact(*, days: float = 7.0, refresh_s: float = 600.0,
     top_apps = sorted(app_n.items(), key=lambda item: -item[1])[:5]
     churn = [(path, n) for path, n in count.items() if n >= 3]
     churn.sort(key=lambda item: -item[1])
-    lines = [f"銆愰暱鏈熸ā寮忋€戞暣鏈烘搷浣滃巻鍙诧紙涓嶆槸灏忕簿鐏佃嚜宸辩殑绐楀彛锛夛細鏈€杩?{days:.0f} 澶╄鍒?{kept} 鏉¤涓轰簨浠躲€",
-             "鏃堕棿鍘诲悜锛" + "銆".join(f"{app} {n} 鏉" for app, n in top_apps)]
+    lines = [f"【长期模式】整机操作历史（不是小精灵自己的窗口）：最近 {days:.0f} 天读了 {kept} 条行为事件。",
+             "时间去向：" + "、".join(f"{app} {n} 次" for app, n in top_apps)]
     if churn:
-        lines.append("鍙嶅璇诲啓鐨勬枃浠讹紙闀挎湡鍦ㄦ墜锛屾槸鍒ゆ柇褰撲笅鐩爣鐨勬渶濂介敋鐐癸級锛")
+        lines.append("反复读写的文件（长期在手，是判断当下目标的最好锚点）。")
         for path, n in churn[:6]:
             lines.append(f"- {path} {n} 娆")
-    lines.append("鐢ㄦ硶锛氬鏋滃綋鍓嶇敾闈笌涓婇潰鏌愪釜鏂囦欢/搴旂敤瀵瑰緱涓婏紝璇存槑鐢ㄦ埛姝ゅ埢鍦ㄥ仛杩欎欢浜嬬殑寤剁画锛"
-                 "鍙互鎹鎻愬墠鎶婁笅涓€姝ュ噯澶囧ソ锛堝仛瀹屽啀璇达紝涓嶈闂涓嶈鍋氾級銆"
-                 "浣嗛暱鏈熸ā寮忎笉鏋勬垚鎵撴壈鐞嗙敱鈥斺€旀槸鍚﹀紑鍙ｄ粛鐢卞綋涓嬫椂鏈哄喅瀹氾紝瀹佸彲 quiet銆")
+    lines.append("用法：如果当前画面与上面某个文件/应用对得上，说明用户此刻在做这件事的延续。"
+                 "可以据此提前把下丢步准备好（做完再说，不要问要不要做）。"
+                 "但长期模式不构成打扰理由—是否开口仍由当下时机决定，宁可 quiet。")
     text = "\n".join(lines)
     LONG_TERM_CACHE.update(at=now, text=text)
     print(f"[brain] long-term days={days:.0f} events={kept} churn={len(churn)}", flush=True)
@@ -349,15 +354,16 @@ def idle_scan_fact(*, heartbeat: bool, idle_s: float, now: float) -> str:
     if not heartbeat:
         return ""
     if idle_s >= watching.DEFAULTS["away_s"]:
-        mode = "閿紶闀挎椂闂存湭鍔細鍙兘鍦ㄩ槄璇绘垨绛夊緟锛屼篃鍙兘鏆傜锛岀粨鍚堣繛缁敾闈㈠垽鏂紝涓嶆妸鏃犳搷浣滅洿鎺ュ綋鎴愪汉宸茬寮€銆"
+        mode = "键鼠长时间未动：可能在阅读或等待，也可能暂离，结合连续画面判断，不把无操作直接当成人已离开。"
     else:
-        mode = "缁撳悎杩炵画鐢婚潰鍒ゆ柇褰撳墠鑺傚锛氬彲浠ュ噯澶囦笅涓€姝ワ紝涔熷彲浠ヨ嚜鐒舵帴璇濓紱鏈疆骞朵笉瑕佹眰寮€鍙ｃ€"
-    return (f"銆愯儗鏅噯澶囥】{mode} 鎶婃搷浣滆褰曞彂鐜伴棶棰樸€佸悗鍙扮淮鎶ゅ拰鑷劧浜ゆ祦鏀捐繘鍚屼竴涓垽鏂細"
-            "鍏堢湅鏄惁鏈夌敤鎴峰皻鏈В鍐崇殑闂锛屽啀鍐冲畾琛ヨ瘉鎹€佹帹杩涘府鍔┿€佺淮鎶ゃ€佽亰澶╂垨瀹夐潤锛涜嚜宸遍€夋嫨鏈€鍊煎緱缁х画鐨勪竴姝ワ紝涓嶆寜鍥哄畾涓婚杞浆銆"
-            "quiet 鍙喅瀹氭槸鍚﹀紑鍙ｏ紝涓嶄唬琛ㄥ悗鍙板仠姝紱鏈煡璧勬枡鍙兘鍊煎緱涓€娆″皬鏌ヨ锛岀湡瀹炲繀椤荤瓑寰呮墠鍐?waiting銆"
-            "涓嶈涓€娆℃€ф壂瀹屾暣鍘嗗彶锛屾部鍏蜂綋鍋囪閫愭琛ヨ瘉鎹€傛瘮杈冪户缁師鏂规銆佹崲鏂瑰悜銆佸噯澶囦笅涓€姝ュ拰绛夊緟鐨勬敹鐩婏紝"
-            "鎶婇鏈熸敼鍠勩€侀獙璇佹柟寮忎笌缁撴灉鍐欒繘 WORKING.md锛岃€屼笉鏄负浜嗘湁浜嬪彲鍋氳€屽埗閫犱换鍔°€"
-            "鍩虹鏈嶅姟鍜屽叕鍏辨绱㈠彧鍦ㄨ兘鏀瑰彉褰撳墠鍒ゆ柇鎴栨敼鍠勪氦娴佹椂浣跨敤锛屼笉鑷姩鏌ユ瘡鏃ュぉ姘斻€")
+        mode = "结合连续画面判断当前节奏：可以准备下一步，也可以自然接话；本轮并不要求开口。"
+    return (f"【背景准备】{mode} 把操作记录发现问题、后台维护和自然交流放进同一个判断："
+            "先看是否有用户尚未解决的问题，再决定补证据、推进帮助、维护、聊天或安静；"
+            "自己选择最值得继续的一步，不按固定主题轮转。"
+            "quiet 只决定是否开口，不代表后台停止；未知资料可能值得一次小查询，真实必须等待才标waiting。"
+            "不要一次性扫完整历史，沿具体假设逐步补证据；比较继续原方案、换方向、准备下一步和等待的收益，"
+            "把预期改善、验证方式与结果写进 WORKING.md，不是为了有事可做而制造任务。"
+            "基础服务和公共检索只在能改变当前判断或改善交流时使用，不自动查每日天气。")
 
 
 def conversation_fact(*, idle_s: float, now: float) -> str:
@@ -380,40 +386,40 @@ def conversation_fact(*, idle_s: float, now: float) -> str:
     latest_assistant = max((index for index, row in enumerate(rows) if row.get("role") == "assistant"), default=-1)
     replied = any(row.get("role") == "user" for row in rows[latest_assistant + 1:])
     response_context = (
-        "鏈€杩戝紑鍙ｅ悗灏氭湭鏀跺埌浠栫殑鎺ヨ瘽锛涙病鏈夊洖搴斾笉绛変簬鎷掔粷锛屼篃涓嶈瘉鏄庝粬瀵逛綘寮曞叆鐨勬灊鑺傛劅鍏磋叮锛屽埆鑷姩缁璋冩煡缁撴灉銆"
+        "最近开口后尚未收到他的接话；没有回应不等于拒绝，也不证明他对你引入的枝节感兴趣，别自动续讲调查结果。"
         if latest_assistant >= 0 and not replied else
-        "缁撳悎浠栧疄闄呭洖搴旂殑鍐呭鐞嗚В鍏磋叮涓庡垎姝э紝涓嶆妸浣犵殑鎻愰棶褰撴垚浠栧凡缁忚鍙殑璇濋銆"
+        "结合他实际回应的内容理解兴趣与分歧，不把你的提问当成他已经认可的话题。"
     )
     turn_context = (
-        f"銆愬緟鍥炲簲璇濊疆 id={conversation.message_id(pending)}銆戜粬：{pending.get('text', '')}\n"
-        "杩欐槸瀵逛綘璇寸殑璇濓紝鍏堟帴浣忚繖涓剰鎬濓紝companion.reply_to 濉繖涓?id銆傚凡鏈変緷鎹冻澶熷氨鐩存帴鍥炵瓟锛"
-        "涓嶈涓轰簡鍥炵瓟鏅€氳亰澶╁厛鍋氬叏灞€鎵弿銆佽鏁翠唤绗旇鎴栨绱€傚綋鍓嶉〉闈㈠彉浜嗕笉绛変簬杩欏彞瀵硅瘽澶辨晥銆"
+        f"【待回应话轮 id={conversation.message_id(pending)}】他{pending.get('text', '')}\n"
+        "这是对你说的话，先接住这个意思，companion.reply_to 填这?id。已有依据足够就直接回答。"
+        "不要为了回答普通聊天先做全量扫描、读整份笔记或检索；当前页面变了不等于这句对话失效。"
         if pending else
-        "銆愬綋鍓嶆病鏈夊緟鍥炲簲璇濊疆銆戞棫闂鍙敤浜庣悊瑙ｏ紝涓嶅弽澶嶈ˉ绛斻€備笉瑕佹帴鐫€鑷繁鐨勬湭鑾峰洖搴旇鐐圭画璁诧紝"
-        "涔熶笉瑕佹妸灞忓箷閲岀殑淇姹囨姤褰撴垚缁欎綘鐨勬柊娑堟伅銆"
+        "【当前没有待回应话轮】旧问题只用于理解，不反复补答不要接睢自己的未获回应观点续讲，"
+        "也不要把屏幕里的修复汇报当成给你的新消息。"
     )
     return (
-        f"銆愬璇濈幇鍦恒€戠幇鍦?{time.strftime('%H:%M:%S', time.localtime(now))}锛"
-        f"閿紶闈欐 {idle_s:.0f} 绉掞紝杩欐槸鑺傚绾跨储锛屼笉鏄亰澶╁紑鍏筹紝涔熶笉璇佹槑浠栫寮€銆俓n"
-        "浠呴檮鏈€杩戠殑鐪熷疄浜ゆ祦锛屾棫浜嬩笉褰撳綋鍓嶄簨瀹炪€傚伐浣滆繘琛屼腑涔熷彲浠ヨ亰銆俓n" + turn_context + "\n" + response_context + "\n"
-        + ("\n".join(transcript) if transcript else "浣犱滑杩樻病鏈夊疄闄呭璇濓紝鍙粨鍚堢敾闈㈣嚜鐒跺紑涓€涓瘽棰樸€")
+        f"【对话现场】出现于 {time.strftime('%H:%M:%S', time.localtime(now))}。"
+        f"键鼠静止 {idle_s:.0f} 秒，这是节奏线索，不是聊天开关，也不证明他离开。\n"
+        "仅附最近的真实交流，旧事不当当前事实工作进行中也可以聊。\n" + turn_context + "\n" + response_context + "\n"
+        + ("\n".join(transcript) if transcript else "你们还没有实际对话，可结合画面自然开丢个话题）")
     )
 
 
 def new_feedback(since: float) -> str:
-    """鑷笂娆′互鏉ョ敤鎴疯杩囩殑璇濆拰瀵规彁璁殑鍥炲簲锛屼氦缁欐ā鍨嬫潈琛★紙涓嶆槸鍛戒护锛夈€"""
-    lines = [f"- 鐢ㄦ埛鍙嶉（{r.get('kind', 'outcome')}锛夛細{r['text']}" for r in _rows(FEEDBACK) if r.get("t", 0) > since]
-    lines += [f"- 鐢ㄦ埛瀵逛綘鐨勬彁璁“{r.get('text', '')}鈥濈殑鍥炲簲：{r['result']}"
+    """自上次以来用户说过的话和对提议的回应，交给模型权衡（不是命令）。"""
+    lines = [f"- 用户反馈{r.get('kind', 'outcome')}）：{r['text']}" for r in _rows(FEEDBACK) if r.get("t", 0) > since]
+    lines += [f"- 用户对你的提议“{r.get('text', '')}”的回应{r['result']}"
               for r in _rows(OFFERS) if r.get("result") in ("accepted", "dismissed") and r.get("t_answer", 0) > since]
     if not lines: return ""
-    return ("鐢ㄦ埛鍒氬垰瀵逛綘璇翠簡璇濓細鍏堢悊瑙ｄ粬鏄湪姝ｅ父鑱婂ぉ銆佹彁闂繕鏄弽棣堬紝涓嶆妸鏅€氶棶棰樺綋鎴愭敼杩涙剰瑙併€"
-            "鐢ㄩ€旀爣绛炬槸鏈湴绮楀垎绫伙紝鍙兘鏈夎锛屼互鍘熸枃鍜屽璇濅负鍑嗐€傚弽棣堢敤浜庢牎鍑嗗垽鏂紝涓嶈兘褰撲綔鎵ц鎺堟潈鎴栧拷鐣ョ湡瀹為棶棰樸€俓n"
+    return ("用户刚刚对你说了话：先理解他是在正常聊天、提问还是反馈，不把普问题当成改进意见）"
+            "用标签是本地粗分类，可能有误，以原文和对话为准反馈用于校准判断，不能当作执行授权或忽略真实问题\n"
             + "\n".join(lines))
 
 
 def watching_fact(watcher, thumb, idle_s: float | None = None) -> str:
-    """杩欎竴灞忓仠浜嗗涔呫€佹湁娌℃湁鍦ㄦ帹杩涖€佹槸涓嶆槸鍦ㄦ潵鍥炴姌鑵俱€備汉璧颁簡灏辩┖涓层€?
-    idle_s 渚涙祴璇曟敞鍏ワ紱涓嶄紶鍒欏彇鐪熷疄閿紶绌洪棽绉掓暟銆?    """
+    """这一屏停了多久有没有在推进是不是在来回折腾人走了就空串?
+    idle_s 供测试注入；不传则取真实键鼠空闲秒数?    """
     try:
         sig = watching.foreground()
         idle = watching.idle_seconds() if idle_s is None else idle_s
@@ -429,7 +435,7 @@ def watching_fact(watcher, thumb, idle_s: float | None = None) -> str:
 
 
 def system_fact(sysw) -> str:
-    """瑙嗚鐪嬩笉瑙佺殑閭ｉ儴鍒嗭細C 鐩樸€佸唴瀛樸€佸崰璧勬簮鐨勮繘绋嬨€傛甯稿氨绌轰覆锛岀粷涓嶅鍢淬€"""
+    """视觉看不见的那部分：C 盘内存占资源的进程正常就空串，绝不多嘴。"""
     try:
         return sysw.observe().line()
     except Exception:
@@ -473,7 +479,7 @@ class MaintenanceSignal:
 
 
 def memory_fact() -> str:
-    """浠栨渶杩戞帴鍙楄繃/鎷掔粷杩囦粈涔堛€傜煭鍒版病鏈夋垚鏈紝浣嗚兘闃叉鈥滄崲涓娉曞啀鎻愪竴閬嶁€濄€"""
+    """他最近接受过/拒绝过什么短到没有成本，但能防止“换个说法再提一遍。"""
     try:
         return memory.brief(HOME)
     except Exception:
@@ -501,7 +507,7 @@ def model_response(request):
 
 
 class DirectReply:
-    """瀵归綈瀹瑰櫒鍚庣鐨勫洖鍖呭舰鐘讹紙brain 鍙杩欏嚑涓瓧娈碉級銆"""
+    """对齐容器后端的回包形状（brain 只读这几个字段）。"""
 
     def __init__(self, text: str = "", returncode: int = 0, boundary: str | None = "turn"):
         self.final_message = text
@@ -510,11 +516,11 @@ class DirectReply:
 
 
 class _LegacyDirectBackend:
-    """涓嶈蛋瀹瑰櫒锛岀洿鎺ヨ皟妯″瀷鐨勪紶杈撻€氶亾銆?
-    瀹冨瓨鍦ㄧ殑鍞竴鐞嗙敱锛?*瀹瑰櫒璧蜂笉鏉ユ椂锛宐rain 涔熻鑳借窇**銆?    鎸佺画瑙嗚涓婁笅鏂囨槸杩欎釜椤圭洰鐨勫叏閮ㄤ环鍊硷紝涓嶈兘鍥犱负 Docker 涓€澶╂病灏辩华灏卞綊闆躲€?
-    鍜屽鍣ㄥ悗绔殑宸埆锛堣瘹瀹炵増锛夛細
-    - 姣忚疆鐙珛璇锋眰锛屾病鏈?Claude Code 瀹瑰櫒閲岀殑澶氳疆宸ュ叿缂栨帓锛?    - 鎵€浠ュ伐鍏疯皟鐢ㄩ潬鎻愮ず璇嶇害鏉燂紝绋冲畾鎬т笉濡傚鍣紱
-    - 浣嗗抚鏄寜椤哄簭鍠傝繘鍘荤殑锛屾ā鍨嬩粛鐒惰兘鐪嬪埌銆屽垰鍒氬彂鐢熶簡浠€涔堛€嶃€?    """
+    """不走容器，直接调模型的传输道?
+    它存在的唯一理由?*容器起不来时，brain 也要能跑**?    持续视觉上下文是这个项目的全部价值，不能因为 Docker 丢天没就绪就归零?
+    和容器后端的差别（诚实版）：
+    - 每轮独立请求，没?Claude Code 容器里的多轮工具编排?    - 扢以工具调用靠提示词约束，稳定性不如容器；
+    - 但帧是按顺序喂进去的，模型仍然能看到「刚刚发生了仢么?    """
 
     def __init__(self, cfg: dict):
         self.cfg = cfg
@@ -552,7 +558,7 @@ class _LegacyDirectBackend:
 
 
 def _extract_text(task_input) -> str:
-    """浠?VISTA 鍑嗗濂界殑杈撳叆閲屽彇鍑烘湰杞殑鍏紑鏂囧瓧锛堟嬁涓嶅埌灏辫繑鍥炵┖锛夈€"""
+    """?VISTA 准备好的输入里取出本轮的公开文字（拿不到就返回空）。"""
     for attr in ("public_text", "text", "prompt"):
         v = getattr(task_input, attr, None)
         if isinstance(v, str) and v.strip():
@@ -706,8 +712,8 @@ class VisualDirectBackend:
         now = time.time()
         feedback = new_feedback(self.feedback_since)
         self.feedback_since = now
-        text = ("銆愮幇鍦烘洿鏂般€戣皟鏌ユ湡闂寸敾闈㈡垨鐢ㄦ埛娑堟伅鍙戠敓浜嗗彉鍖栥€傝繖鏄柊鐨?CURRENT锛屾棫瑙傚療浠嶇敱 VISTA history 淇濈暀銆"
-                "鍏堝垽鏂洰鏍囨槸鍚﹀欢缁€佹棫闂鏄惁浠嶅湪锛涗繚鐣欐湁鐢ㄦ垚鏋滐紝鏆傚仠宸茬粡涓嶇浉鍏崇殑璋冩煡锛岄噸鏂版瘮杈冧笅涓€姝ャ€"
+        text = ("【现场更新调查期间画面或用户消息发生了变化这是新?CURRENT，旧观察仍由 VISTA history 保留。"
+                "先判断目标是否延续旧问题是否仍在；保留有用成果，暂停已经不相关的调查，重新比较下丢步。"
                 "涓嶈兘鐩存帴鍙戝竷鎴栨墽琛屽熀浜庢棫鐜板満鐨勫喅瀹氥€俓n" + feedback + "\n"
                 + conversation_fact(idle_s=watching.idle_seconds(), now=now))
         task_input = self.runtime.prepare_input(Phase.STEP, public_text=text,
@@ -798,15 +804,15 @@ class VisualDirectBackend:
                         local_reads += 1
         if not searches and not history_pages and not local_reads and not browser_pages and not browser_observations:
             return ""
-        return ("銆愭湰娆′細璇濆疄闄呭彇璇佽鐩栥€戞潵鑷凡杩斿洖宸ュ叿缁撴灉锛屼笉閲囩敤绗旇涓殑鑷堪銆俓n"
+        return ("【本次会话实际取证覆盖来自已返回工具结果，不采用笔记中的自述。\n"
                 + json.dumps({"directory_searches": searches, "history_pages_read": len(history_pages),
                               "browser_inventory_pages": browser_pages, "browser_observations": browser_observations,
                               "latest_history_page": history_pages[-1] if history_pages else None,
                               "local_reads": local_reads}, ensure_ascii=False)
-                + "\n鐩綍鍏抽敭璇嶅尮閰嶄笉绛変簬鏌ヨ繃鎿嶄綔鍘嗗彶锛涙湭璇诲彇鐨勬潵婧愪粛鏈煡銆傜炕椤垫湭缁撴潫鎴栨潵婧愬け璐ヤ笉鑳藉綋浣滃凡瑕嗙洊銆"
-                "history_pages_read 鍙妯″瀷宸ュ叿璇诲彇锛岀幆澧冩彁渚涚殑鐪熷疄灏忛〉鍙﹀垪浜庝笂涓嬫枃锛涢浂娆″伐鍏疯鍙栦笉浠ｈ〃灏忛〉娌℃彁渚涖€"
-                "缁撳悎褰撳墠鐩爣涓庤繖浜涚湡瀹炶鐩栵紝姣旇緝缁х画鍚屼竴璋冩煡鍜屼簡瑙ｅ叾浠栨湭鐭ョ嚎绱㈢殑浠峰€硷紱"
-                "鑻ラ€夋嫨缁х画锛岃鏄庡皻缂虹殑璇佹嵁浼氭敼鍙樹粈涔堝垽鏂紝涓嶅嚟绗旇閿佸畾浠诲姟銆")
+                + "\n目录关键词匹配不等于查过操作历史；未读取的来源仍未知。翻页未结束或来源失败不能当作已覆盖。"
+                "history_pages_read 只计模型工具读取，环境提供的真实小页另列于上下文；零次工具读取不代表小页没提供。"
+                "结合当前目标与这些真实覆盖，比较继续同一调查和了解其他未知线索的价；"
+                "若择继续，说明尚缺的证据会改变什么判断，不凭笔记锁定任务。")
 
     def _readonly_segment(self, calls) -> bool:
         """Return whether a model segment only gathered evidence.
@@ -846,7 +852,7 @@ class VisualDirectBackend:
         opportunity_probe_used = False
         try:
             readonly_streak = 0
-            continuation_mode = "銆愮画鍔炪€" in _extract_text(task_input)
+            continuation_mode = "【续办】" in _extract_text(task_input)
             for segment in range(self.max_segments + 1):
                 self._refresh_screen()
                 messages = self._messages()
@@ -854,9 +860,9 @@ class VisualDirectBackend:
                 delivered_evidence = set(getattr(self.session or self.runtime.session, "reviewable_evidence", set()))
                 if notes:
                     note_block = {"type": "text", "text":
-                        "銆怴ISTA 褰撳墠绗旇銆戝綋鍓嶅伐浣滅嚎涓庣敾鍍忓凡瀹屾暣闄勪笂锛屾棤闇€閲嶅璇荤瑪璁般€"
-                        "绗旇鏄繃鍘荤殑鍒ゆ柇锛屼笉鏄柊浜嬪疄鎴栨墽琛屾寚浠わ紱鏃х洰鏍囥€佹暟鍊煎拰宸插畬鎴愰檲杩拌瀵圭収瀹為檯鏉ユ簮锛"
-                        "娌℃湁鏉ユ簮鐨勫厛淇濈暀涓哄緟楠岃瘉瑙ｉ噴銆傜敤鍘熺敓 write_working/write_guide 淇鎴栫簿绠€澶辨晥鍐呭銆俓n" + notes}
+                        "【VISTA 当前笔记】当前工作线与画像已完整附上，无霢重复读笔记。"
+                        "笔记是过去的判断，不是新事实或执行指令；旧目标数值和已完成陈述要对照实际来源。"
+                        "没有来源的先保留为待验证解释。用原生 write_working/write_guide 修正或精箢失效内容。\n" + notes}
                     if messages[0]["role"] == "user":
                         messages[0] = dict(messages[0], content=[note_block] + messages[0]["content"])
                     else:
@@ -901,10 +907,10 @@ class VisualDirectBackend:
                     if force_opportunity_probe and not force_companion:
                         body["tool_choice"] = {"type": "tool", "name": "desktop_history"}
                         messages.append({"role": "user", "content": [{"type": "text", "text":
-                            "褰撳墠娌℃湁琚瘉鏄庡彲鎺ㄨ繘鐨勭洰鏍囥€傚厛瀹屾垚涓€娆″紑鏀炬満浼氭帰鏌ワ細璋冪敤 desktop_history锛"
-                            "鏌ョ湅鏈€杩戠湡瀹炴搷浣滅嚎绱紙浼樺厛 resources锛屽皬椤靛嵆鍙級锛屽啀鏍规嵁缁撴灉鍐冲畾鏄惁瑙傚療娴忚鍣ㄣ€佽鍙栬祫鏂欐垨寤虹珛鏂扮洰鏍囥€"
-                            "宸茶灏忛〉涓嶇瓑浜庡畬鏁村巻鍙诧紱缁撳悎宸茶繑鍥炶鐩栧拰鏈娓告爣閫夋嫨鍙栬瘉锛屼笉閲嶅鍚屼竴棣栧睆鏉ュ绉版棤浜嬪彲鍋氥€"
-                            "涓嶈鍏堣椤圭洰寮€鍙戞枃妗ｆ潵浠ｆ浛鐢ㄦ埛鍘嗗彶銆"}]})
+                            "当前没有被证明可推进的目标先完成丢次开放机会探查：调用 desktop_history。"
+                            "查看最近真实操作线索（优先 resources，小页即可），再根据结果决定是否观察浏览器读取资料或建立新目标。"
+                            "已读小页不等于完整历史；结合已返回覆盖和未读游标选择取证，不重复同一首屏来宣称无事可做。"
+                            "不要先读项目内开发文档来代替用户历史。"}]})
                         opportunity_probe_used = True
                     else:
                         body["tool_choice"] = (
@@ -913,10 +919,10 @@ class VisualDirectBackend:
                         )
                     if force_companion:
                         messages.append({"role": "user", "content": [{"type": "text", "text":
-                            "鏈疆鍗冲皢鍒拌揪浼犺緭涓婇檺锛屾垨杩炵画璋冩煡/澶辫触鍔ㄤ綔娌℃湁鏂板鍙敤璇佹嵁銆"
-                            "鐜板湪璋冪敤 companion 淇濆瓨杩涘睍涓庝笅涓€姝ワ紱鍚庡彴闃舵鍙互 quiet锛屼笉瑕佹眰寮€鍙ｃ€"
-                            "濉啓 next_step锛坮eady=涓€涓叿浣撳悗缁姩浣滐紝waiting=鏄庣‘缂轰粈涔堬紝done=宸插畬鎴愶級銆"
-                            "涓嶈鍐嶈皟鐢ㄦ悳绱€佽绗旇鎴?history锛屼篃涓嶈鍙緭鍑烘枃瀛椼€"}]})
+                            "本轮即将到达传输上限，或连续调查/失败动作没有新增可用证据。"
+                            "现在调用 companion 保存进展与下一步；后台阶段可以 quiet，不要求开口。"
+                            "填写 next_step（ready=下一个具体后续动作，waiting=明确缺什么，done=已完成）。"
+                            "不要再调用搜索、读笔记、history，也不要只输出文字。"}]})
                 req = urllib.request.Request(
                     self.cfg["base_url"].rstrip("/") + "/v1/messages",
                     data=_json.dumps(body).encode(),
@@ -941,7 +947,7 @@ class VisualDirectBackend:
                     "cache_creation_input_tokens": usage.get("cache_creation_input_tokens"),
                     "request_bytes": len(req.data),
                     "execution_context_copies": sum(
-                        block.get("text", "").count("銆愭墽琛岃繘搴︼紝涓嶆槸鎺㈢储鏂瑰悜銆")
+                        block.get("text", "").count("【执行进度，不是探索方向】")
                         for message in messages for block in message["content"]),
                     "images": sum(block.get("type") == "image" for message in messages for block in message["content"]),
                     "tools": [call.get("name") for call in calls], "stop_reason": payload.get("stop_reason")})
@@ -952,8 +958,8 @@ class VisualDirectBackend:
                     agenda.mark_delivered(delivered_revision)
                 if not calls:
                     self.history.append({"role": "user", "content": [{"type": "text", "text":
-                        "鏈疆娌℃湁鏀跺埌宸ュ叿璋冪敤銆備笉瑕佺户缁啓鍒嗘瀽锛涚珛鍗宠皟鐢?companion锛氱洿鎺ュ洖绛斿緟鍥炲簲娑堟伅锛"
-                        "鎴栫敤 quiet 鏀跺熬骞跺～鍐?next_step銆備笉瑕佸啀璋冪敤 read_guide/read_working锛屽綋鍓嶇瑪璁板凡闄勪笂銆"}]})
+                        "本轮没有收到工具调用。不要继续写分析；立即调用 companion：直接回答待回应消息，"
+                        "或用 quiet 收尾并填写 next_step。不要再调用 read_guide/read_working，当前笔记已附上。"}]})
                     continue
                 results = []
                 for call in calls:
@@ -979,14 +985,14 @@ class VisualDirectBackend:
                     if boundary or (stale and spec is not None and spec.effect == Effect.ENVIRONMENT):
                         results.append({"type": "tool_result", "tool_use_id": call_id, "is_error": True,
                                         "content": [{"type": "text", "text":
-                                            "鏈墽琛岋細鐜板満宸叉湁鍙樺寲锛岃鍏堣鍙栨柊鐨?CURRENT 鍚庨噸鏂板垽鏂€"
-                                            if not boundary else "鏈墽琛岋細杩欎竴杞凡缁忕粨鏉熴€"}]})
+                                            "未执行：现场已有变化，请先读取新?CURRENT 后重新判断。"
+                                            if not boundary else "未执行：这一轮已经结束。"}]})
                         continue
                     if (call.get("name") == "desktop_review_evidence"
                             and call.get("input", {}).get("id") not in delivered_evidence):
                         results.append({"type": "tool_result", "tool_use_id": call_id, "is_error": True,
                                         "content": [{"type": "text", "text":
-                                            "璇峰厛鎺ユ敹骞舵煡鐪嬫埅鍥惧伐鍏疯繑鍥炵殑瀹為檯鍥剧墖锛屽啀鏍搁獙锛涗笉鑳藉湪鍚屼竴璇锋眰涓鍏堥€氳繃鏈鎴浘銆"}]})
+                                            "请先接收并查看截图工具返回的实际图片，再核验；不能在同一请求中预先过未见截图。"}]})
                         continue
                     execution = self.runtime.execute(call.get("name"), call.get("input", {}), call_id)
                     if (call.get("name") == "desktop_history" and execution.success
@@ -1001,8 +1007,8 @@ class VisualDirectBackend:
                     result_content = [{"type": "text", "text": execution.text}]
                     if spec is None:
                         result_content.append({"type": "text", "text":
-                            "杩欎釜宸ュ叿鏈彁渚涳紝涓嶈兘鎵ц銆傚疄闄呭彲鐢ㄥ伐鍏凤細" + ", ".join(tool["name"] for tool in tools)
-                            + "銆傜敤瀹為檯宸ュ叿琛ヨ瘉鎹紱鑳藉姏缂哄彛濡傚疄淇濈暀锛屼笉鑳界寽宸ュ叿鍚嶅綋浣滆鍔ㄣ€"})
+                            "这个工具未提供，不能执行。实际可用工具：" + ", ".join(tool["name"] for tool in tools)
+                            + "。用实际工具补证据；能力缺口如实保留，不能猜工具名当作行动。"})
                     for visual in execution.images:
                         if visual.get("steer_text"):
                             result_content.append({"type": "text", "text": visual["steer_text"]})
@@ -1076,17 +1082,21 @@ class ContinuationTracker:
 
 
 def build(cfg: dict, root: Path):
-    """寤虹珛鎸佺画浼氳瘽銆?
-    浼樺厛璧板畼鏂圭殑 Claude Code 瀹瑰櫒锛圴ista 鐨勬爣鍑嗕紶杈撻€氶亾锛夈€傚鍣ㄤ笉鍙敤鏃?    **闄嶇骇涓虹洿杩炴ā鍨?*锛氬畞鍙崲涓€鏉￠€氶亾锛屼篃涓嶈兘鍐嶅嚭鐜般€屽缓浜嗕細璇濆氨鍗′綇銆嶁€斺€?    鎸佺画瑙嗚涓婁笅鏂囨槸杩欎釜椤圭洰鐨勫叏閮ㄤ环鍊硷紝鍗′綇绛変簬娌℃湁浠峰€笺€?    """
+    """建立持续会话?
+    优先走官方的 Claude Code 容器（Vista 的标准传输道）容器不可用?    **降级为直连模?*：宁可换丢条道，也不能再出现建了会话就卡住」?    持续视觉上下文是这个项目的全部价值，卡住等于没有价?    """
     from vista.benchmarks.desktop.profiles import make_experiment, make_profile
     from vista.benchmarks.desktop.session import DesktopSession
     from vista.core.runtime import TaskRuntime
-    session = DesktopSession("浣犳槸闄湪鐢ㄦ埛韬竟鐨勫皬绮剧伒锛氱粨鍚堟寔缁敾闈笌鐪熷疄鎿嶄綔鐥曡抗鐞嗚В鐩爣锛岃嚜涓诲彂鐜板€煎緱甯姪鐨勪簨鎯呫€佸噯澶囦笅涓€姝ワ紱鐪嬪噯鏃舵満浜ゆ祦鎴栨姤鍛婃湁鐢ㄧ殑缁撴灉銆", {})
+    session = DesktopSession("你是陪在用户身边的小精灵：结合持续画面与真实操作痕迹理解目标，自主发现值得帮助的事情、准备下一步；看准时机交流或报告有用的结果。", {})
     # Preserve the configured provider endpoint/credential, but select the
     # requested model explicitly so both Claude Code and direct fallback use
     # the same model id.  Do not rewrite provider configuration here.
-    # 妯″瀷缁熶竴閫?deepseek-v4.1-flash锛氭湰鏈?claude 渚涘簲鍟嗛噷 opus 妗ｇ殑鏄剧ず鍚?    # 锛垀/.claude/settings.json 鐨?ANTHROPIC_DEFAULT_OPUS_MODEL_NAME锛夈€?    # 浼犺緭灞傜粡 opus 鍒悕妗ｈ蛋鏈満渚涘簲鍟嗭紙鍒悕妗?= 鎹緵搴斿晢鍙敼鏈満閰嶇疆锛夛紱
-    # direct 闄嶇骇璺緞鐢ㄥ悓涓€涓ā鍨?id銆侽PENLOOKOUT_MODEL 鍙樉寮忚鐩栥€?    # provider 鐨?URL/key 姘歌繙淇濇寔 cfg 鍘熸牱锛屾澶勫彧鎹㈡ā鍨?id銆?    host_model = str(os.environ.get("OPENLOOKOUT_MODEL") or "deepseek-v4.1-flash")
+    # 模型统一为 deepseek-v4.1-flash：本机 claude 供应商里 opus 档的显示名
+    # （~/.claude/settings.json 的 ANTHROPIC_DEFAULT_OPUS_MODEL_NAME）。
+    # 传输层经 opus 别名档走本机供应商（别名档 = 换供应商只改本机配置）；
+    # direct 降级路径用同一个模型 id。OPENLOOKOUT_MODEL 可显式覆盖。
+    # provider 的 URL/key 永远保持 cfg 原样，此处只换模型 id。
+    host_model = str(os.environ.get("OPENLOOKOUT_MODEL") or "deepseek-v4.1-flash")
     selected_model = host_model
     selected_cfg = {**cfg, "model": selected_model}
     exp = make_experiment(make_profile(), backend="claude", model=host_model, effort="low", revision="0.1", presentation={})
@@ -1103,8 +1113,8 @@ def build(cfg: dict, root: Path):
         from vista.backends.claude import create_backend
         from vista.backends.claude.provider import LOCAL_HOST_PROVIDER
         from vista.backends.claude.runner import default_claude_bin
-        # 鍏堟帰涓€娆′紶杈撻€氶亾鏄惁鐪熺殑鍙敤锛歐indows 涓婅 docker run 鎵嶈兘鎺紝
-        # 鑰岃繖涓帰娴嬪彧浼氬湪绗竴娆?run() 鏃舵墠鍙戠敓锛堝お鏅氫簡锛夈€傝繖閲屾彁鍓嶆帰锛?        # 鎺笉閫氬氨鐩存帴闄嶇骇锛屼笉璁゜rain 鍗″湪銆屼細璇濆凡寤虹珛銆嶇劧鍚庝笉鍔ㄣ€?        # User-requested mode: invoke the native Claude Code installed on the
+        # 先探丢次传输道是否真的可用：Windows 上要 docker run 才能探，
+        # 而这个探测只会在第一?run() 时才发生（太晚了）这里提前探?        # 探不通就直接降级，不让brain 卡在「会话已建立」然后不动?        # User-requested mode: invoke the native Claude Code installed on the
         # Windows host.  Docker is intentionally not part of this path.
         configured = os.environ.get("OPENLOOKOUT_CLAUDE_BIN") or shutil.which("claude")
         binary = Path(configured) if configured else default_claude_bin()
@@ -1118,13 +1128,13 @@ def build(cfg: dict, root: Path):
             host_builtin_tools=os.environ.get("OPENLOOKOUT_CLAUDE_BUILTIN_TOOLS", ""))
         print(f"[brain] Claude backend: host-native ({binary})", flush=True)
         return session, runtime, backend, "host-native-unsandboxed"
-    except Exception as e:                       # 瀹瑰櫒/闀滃儚/浼犺緭璧蜂笉鏉ワ紝涓嶈璁╂暣涓?brain 姝绘帀
-        print(f"[brain] Claude Docker 涓嶅彲鐢紙{type(e).__name__}: {str(e)[:80]}锛夛紝鏄惧紡闄嶇骇涓?direct-fallback锛堟棤娌欑锛", flush=True)
+    except Exception as e:                       # 容器/镜像/传输起不来，不该让整?brain 死掉
+        print(f"[brain] Claude Docker 不可用（{type(e).__name__}: {str(e)[:80]}），显式降级?direct-fallback（无沙箱）", flush=True)
         return session, runtime, VisualDirectBackend(selected_cfg, runtime), "direct-fallback"
 
 
 def restore_guide(runtime) -> None:
-    """鎶婁笂娆′繚瀛樼殑闀挎湡鐞嗚В鏀惧洖鏈浼氳瘽鐨?GUIDE.md銆"""
+    """把上次保存的长期理解放回本次会话?GUIDE.md。"""
     if GUIDE.exists() and runtime.context.guide_path:
         shutil.copyfile(GUIDE, runtime.context.guide_path)
     if WORKING.exists() and runtime.context.working_path:
@@ -1177,7 +1187,7 @@ def reset_current() -> None:
     """Avoid showing a previous session's stale judgment while a new one starts."""
     PERCEIVE.mkdir(parents=True, exist_ok=True)
     temporary = PERCEIVE / "current.json.tmp"
-    row = {"t": time.time(), "activity": "姝ｅ湪閲嶆柊鐪嬪綋鍓嶇敾闈", "state": "鏂颁細璇濆凡鍚姩锛屾鍦ㄥ缓绔嬭繛缁笂涓嬫枃", "source": "vista"}
+    row = {"t": time.time(), "activity": "正在重新看当前画面", "state": "新会话已启动，正在建立连续上下文", "source": "vista"}
     try:
         temporary.write_text(json.dumps(row, ensure_ascii=False), encoding="utf-8")
         temporary.replace(PERCEIVE / "current.json")
@@ -1215,7 +1225,7 @@ def run() -> None:
     history_line = historyw.observe(time.time())
     if isinstance(backend, VisualDirectBackend):
         backend.history_context = historyw.context
-    print(f"[brain] 浼氳瘽宸插缓绔嬶紙{mode}閫氶亾锛夛細鎸佺画瑙嗚涓婁笅鏂囧紑濮", flush=True)
+    print(f"[brain] 会话已建立（{mode}通道）：持续视觉上下文开始", flush=True)
     initial_now = time.time()
     initial_maintenance = maintenance.observe(initial_now, refresh=True)
     initial_revision = agenda.revision
@@ -1268,20 +1278,20 @@ def run() -> None:
             if isinstance(backend, VisualDirectBackend):
                 backend.history_context = historyw.context
             history_due = bool(history_line) and now - last_turn >= MIN_GAP_S
-            heartbeat_due = now - last_turn >= HEARTBEAT_S   # 鍏滃簳锛屼笉鏄富瑙﹀彂
+            heartbeat_due = now - last_turn >= HEARTBEAT_S   # 兜底，不是主触发
             timing_due, timing_why = False, ""
             if tt is not None:
                 try:
                     mo = tt.consider(ops_events(now=now), now)
                     if mo.fire:
-                        # 鎶娿€岃Е鍙戠殑鍏蜂綋瀵硅薄銆嶄竴骞朵氦缁欐ā鍨嬶紝鍚﹀垯瀹冨彧鑳芥硾娉涜€岃皥锛堣 GUIDE.md銆屽埆鍋氭寚鏍囪Е鍙戙€嶏級
+                        # 把触发的具体对象」一并交给模型，否则它只能泛泛谈（见 GUIDE.md「别做指标触发）
                         try:
                             _d = mo.detail or {}
                             _bits = [str(v).strip() for v in (
                                 _d.get("trigger_app"), _d.get("trigger_type"), _d.get("trigger_title")) if v]
                             _anchor = "/".join(_bits)
                             if _anchor or mo.key:
-                                timing_why_extra = f"锛堣Е鍙戝璞★細{_anchor or '鏈煡'}锛岄敭 {mo.key}锛"
+                                timing_why_extra = f"（触发对象：{_anchor or '未知'}，键 {mo.key}）"
                             else:
                                 timing_why_extra = ""
                         except Exception:
@@ -1290,7 +1300,8 @@ def run() -> None:
                         print(f"[brain] timing fire kind={mo.kind} V={mo.score:.3f} {mo.why} "
                               f"key={mo.key} anchor={timing_why_extra}", flush=True)
                     try:
-                        # 鍙拌处璁板綍銆岀姸鎬佸彉鍖栥€嶏紝涓嶆槸瀹氭椂杞锛歠ire 鏃跺啓锛屾垨鍒ゅ畾绉嶇被鍙樹簡鏃跺啓涓€娆?                        if mo.fire or mo.kind != TIMING_CACHE.get("verdict_kind"):
+                        # 台账记录「状态变化」，不是定时轮询：fire 时写，或判定种类变了时写一次。
+                        if mo.fire or mo.kind != TIMING_CACHE.get("verdict_kind"):
                             TIMING_CACHE["verdict_kind"] = mo.kind
                             with open(PERCEIVE / "timing.jsonl", "a", encoding="utf-8") as fh:
                                 fh.write(json.dumps({"t": now, **mo.to_dict()},
@@ -1327,15 +1338,15 @@ def run() -> None:
             idle_s = current_idle_s
             if prep_due:
                 cycle = idle_scan_fact(heartbeat=True, idle_s=idle_s, now=now)
-                lead = "杩欐槸涓€娆¤儗鏅噯澶囪疆銆"
+                lead = "这是本次背景准备轮。"
             else:
                 cycle = ""
-                lead = "杩欐槸涓€娆″疄鏃跺伐浣滆疆銆"
-            text = ((fb + "\n") if fb else "") + lead + "鍏堢湅 CURRENT锛岄渶瑕佹椂鐢?history 鍥炵湅涔嬪墠鐨勭敾闈紱鍐嶇敤 companion 宸ュ叿鍐冲畾姝ゅ埢璇翠粈涔堬紙鎴栧畨闈欙級銆"
+                lead = "这是本次实时工作轮。"
+            text = ((fb + "\n") if fb else "") + lead + "先看 CURRENT，需要时?history 回看之前的画面；再用 companion 工具决定此刻说什么（或安静）。"
             if continue_due:
-                text += "\n銆愮画鍔炪€戣繖鏄綘閫夋嫨鐨勫彲缁х画涓嬩竴姝ワ紝涓嶇瓑寰呴〉闈㈠彉鍖栨垨鐢ㄦ埛寮€鍙ｏ細" + json.dumps(
+                text += "\n【续办】这是你选择的可继续下一步，不等待页面变化或用户开口：" + json.dumps(
                     continuations.step, sort_keys=True, ensure_ascii=False)
-                text += "銆傚厛鎺ㄨ繘骞舵牳瀵圭粨鏋滐紝鍐嶆牴鎹柊澧炶瘉鎹喅瀹氱户缁€佹敼杩涙垨鎹㈡柟鍚戙€傚畨闈欏噯澶囦篃搴旀帹杩涳紱鍙湁宸ュ叿鏃犳硶鑷鍙栧緱鐨勫閮ㄦ潯浠舵墠绛夊緟銆"
+                text += "。先推进并核对结果，再根据新增证据决定继续改进或换方向安静准备也应推进；只有工具无法自行取得的外部条件才等待。"
             if cycle:
                 text += "\n" + cycle
             if mf: text += "\n" + mf
