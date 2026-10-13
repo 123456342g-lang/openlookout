@@ -218,15 +218,15 @@ def residual_fact(*, window_min: float = 90.0, refresh_s: float = 5.0, now: floa
             break
     since = min((now - event["t"] for event in scored if event["s"] >= 7), default=None)
     lines = [f"銆愭鍒荤殑寮傚父搴?s_t銆戞湰鍦板彲澶嶇畻锛歴_t = -log2 P(搴旂敤|涓婁竴搴旂敤) - log2 P(绫诲瀷)锛"
-             f"棰勬湡妯″瀷鐢辨湰鏈烘渶杩?{int(window_min)} 鍒嗛挓銆亄len(window)} 鏉¤涓烘祦姘寸幇鍦哄鍑猴紙涓嶆槸妯″瀷鐚滅殑锛夈€",
-             f"褰撳墠 s_t={latest['s']:.2f}锝渰latest['app']}锝渰latest['type']}"
-             + (f"锝渰latest['title']}" if latest["title"] else "")]
+             f"棰勬湡妯″瀷鐢辨湰鏈烘渶杩?{int(window_min)} 鍒嗛挓、{len(window)} 鏉¤涓烘祦姘寸幇鍦哄鍑猴紙涓嶆槸妯″瀷鐚滅殑锛夈€",
+             f"褰撳墠 s_t={latest['s']:.2f}｜{latest['app']}｜{latest['type']}"
+             + (f"{latest['title']}" if latest["title"] else "")]
     if interesting:
         lines.append("鏈€杩?45 鍒嗛挓鏈€涓嶅甯哥殑鏃跺埢锛堣秺楂樿秺涓嶅儚鏈満骞虫椂鐨勬牱瀛愶級锛")
         for event in interesting:
             stamp = time.strftime("%H:%M:%S", time.localtime(event["t"]))
-            lines.append(f"- {stamp} s_t={event['s']:.2f}锝渰event['app']}锝渰event['type']}"
-                         + (f"锝渰event['title']}" if event["title"] else ""))
+            lines.append(f"- {stamp} s_t={event['s']:.2f}｜{event['app']}｜{event['type']}"
+                         + (f"｜{event['title']}" if event["title"] else ""))
     if since is not None:
         lines.append(f"璺濅笂涓€娆℃槑鏄惧紓甯哥害 {since / 60:.0f} 鍒嗛挓銆")
     lines.append("s_t 鍙槸缁熻淇″彿锛屼笉鏄粨璁猴細s_t 楂樿鏄庢鍒诲€煎緱鐪嬩竴鐪兼槸鍚︿笌鐢ㄦ埛褰撲笅鐩爣鏈夊叧锛"
@@ -270,7 +270,7 @@ _DOC_EXT = {".md", ".txt", ".doc", ".docx", ".pdf", ".xls", ".xlsx", ".csv", ".p
 
 
 def _is_user_file(path: str) -> bool:
-    """鎺掗櫎搴旂敤鍐呴儴缂撳瓨/鏃ュ織锛圵XWork 鐨?CEF cache銆乴eveldb銆乲v.db-wal 涔嬬被锛夆€斺€?    杩欎簺鏄€屾枃浠朵簨浠躲€嶉噷鏈€澶х殑鍋囬槼鎬ф潵婧愶紝娣疯繘鏉ヤ細鎶婂簲鐢ㄨ嚜宸辩殑鍐欏叆褰撴垚鐢ㄦ埛鐨勫伐浣溿€?""
+    """鎺掗櫎搴旂敤鍐呴儴缂撳瓨/鏃ュ織锛圵XWork 鐨?CEF cache銆乴eveldb銆乲v.db-wal 涔嬬被锛夆€斺€?    杩欎簺鏄€屾枃浠朵簨浠躲€嶉噷鏈€澶х殑鍋囬槼鎬ф潵婧愶紝娣疯繘鏉ヤ細鎶婂簲鐢ㄨ嚜宸辩殑鍐欏叆褰撴垚鐢ㄦ埛鐨勫伐浣溿€"""
     if not path:
         return False
     low = path.replace("\\", "/").lower()
@@ -329,15 +329,15 @@ def long_term_fact(*, days: float = 7.0, refresh_s: float = 600.0,
     top_apps = sorted(app_n.items(), key=lambda item: -item[1])[:5]
     churn = [(path, n) for path, n in count.items() if n >= 3]
     churn.sort(key=lambda item: -item[1])
-    lines = [f"銆愰暱鏈熸ā寮忋€戞暣鏈烘搷浣滃巻鍙诧紙涓嶆槸灏忕簿鐏佃嚜宸辩殑绐楀彛锛夛細鏈€杩?{days:.0f} 澶╄鍒?{kept} 鏉¤涓轰簨浠躲€?,
-             "鏃堕棿鍘诲悜锛? + "銆?.join(f"{app} {n} 鏉? for app, n in top_apps)]
+    lines = [f"銆愰暱鏈熸ā寮忋€戞暣鏈烘搷浣滃巻鍙诧紙涓嶆槸灏忕簿鐏佃嚜宸辩殑绐楀彛锛夛細鏈€杩?{days:.0f} 澶╄鍒?{kept} 鏉¤涓轰簨浠躲€",
+             "鏃堕棿鍘诲悜锛" + "銆".join(f"{app} {n} 鏉" for app, n in top_apps)]
     if churn:
-        lines.append("鍙嶅璇诲啓鐨勬枃浠讹紙闀挎湡鍦ㄦ墜锛屾槸鍒ゆ柇褰撲笅鐩爣鐨勬渶濂介敋鐐癸級锛?)
+        lines.append("鍙嶅璇诲啓鐨勬枃浠讹紙闀挎湡鍦ㄦ墜锛屾槸鍒ゆ柇褰撲笅鐩爣鐨勬渶濂介敋鐐癸級锛")
         for path, n in churn[:6]:
-            lines.append(f"- {path} {n} 娆?)
-    lines.append("鐢ㄦ硶锛氬鏋滃綋鍓嶇敾闈笌涓婇潰鏌愪釜鏂囦欢/搴旂敤瀵瑰緱涓婏紝璇存槑鐢ㄦ埛姝ゅ埢鍦ㄥ仛杩欎欢浜嬬殑寤剁画锛?
-                 "鍙互鎹鎻愬墠鎶婁笅涓€姝ュ噯澶囧ソ锛堝仛瀹屽啀璇达紝涓嶈闂涓嶈鍋氾級銆?
-                 "浣嗛暱鏈熸ā寮忎笉鏋勬垚鎵撴壈鐞嗙敱鈥斺€旀槸鍚﹀紑鍙ｄ粛鐢卞綋涓嬫椂鏈哄喅瀹氾紝瀹佸彲 quiet銆?)
+            lines.append(f"- {path} {n} 娆")
+    lines.append("鐢ㄦ硶锛氬鏋滃綋鍓嶇敾闈笌涓婇潰鏌愪釜鏂囦欢/搴旂敤瀵瑰緱涓婏紝璇存槑鐢ㄦ埛姝ゅ埢鍦ㄥ仛杩欎欢浜嬬殑寤剁画锛"
+                 "鍙互鎹鎻愬墠鎶婁笅涓€姝ュ噯澶囧ソ锛堝仛瀹屽啀璇达紝涓嶈闂涓嶈鍋氾級銆"
+                 "浣嗛暱鏈熸ā寮忎笉鏋勬垚鎵撴壈鐞嗙敱鈥斺€旀槸鍚﹀紑鍙ｄ粛鐢卞綋涓嬫椂鏈哄喅瀹氾紝瀹佸彲 quiet銆")
     text = "\n".join(lines)
     LONG_TERM_CACHE.update(at=now, text=text)
     print(f"[brain] long-term days={days:.0f} events={kept} churn={len(churn)}", flush=True)
@@ -349,15 +349,15 @@ def idle_scan_fact(*, heartbeat: bool, idle_s: float, now: float) -> str:
     if not heartbeat:
         return ""
     if idle_s >= watching.DEFAULTS["away_s"]:
-        mode = "閿紶闀挎椂闂存湭鍔細鍙兘鍦ㄩ槄璇绘垨绛夊緟锛屼篃鍙兘鏆傜锛岀粨鍚堣繛缁敾闈㈠垽鏂紝涓嶆妸鏃犳搷浣滅洿鎺ュ綋鎴愪汉宸茬寮€銆?
+        mode = "閿紶闀挎椂闂存湭鍔細鍙兘鍦ㄩ槄璇绘垨绛夊緟锛屼篃鍙兘鏆傜锛岀粨鍚堣繛缁敾闈㈠垽鏂紝涓嶆妸鏃犳搷浣滅洿鎺ュ綋鎴愪汉宸茬寮€銆"
     else:
-        mode = "缁撳悎杩炵画鐢婚潰鍒ゆ柇褰撳墠鑺傚锛氬彲浠ュ噯澶囦笅涓€姝ワ紝涔熷彲浠ヨ嚜鐒舵帴璇濓紱鏈疆骞朵笉瑕佹眰寮€鍙ｃ€?
-    return (f"銆愯儗鏅噯澶囥€憑mode} 鎶婃搷浣滆褰曞彂鐜伴棶棰樸€佸悗鍙扮淮鎶ゅ拰鑷劧浜ゆ祦鏀捐繘鍚屼竴涓垽鏂細"
-            "鍏堢湅鏄惁鏈夌敤鎴峰皻鏈В鍐崇殑闂锛屽啀鍐冲畾琛ヨ瘉鎹€佹帹杩涘府鍔┿€佺淮鎶ゃ€佽亰澶╂垨瀹夐潤锛涜嚜宸遍€夋嫨鏈€鍊煎緱缁х画鐨勪竴姝ワ紝涓嶆寜鍥哄畾涓婚杞浆銆?
-            "quiet 鍙喅瀹氭槸鍚﹀紑鍙ｏ紝涓嶄唬琛ㄥ悗鍙板仠姝紱鏈煡璧勬枡鍙兘鍊煎緱涓€娆″皬鏌ヨ锛岀湡瀹炲繀椤荤瓑寰呮墠鍐?waiting銆?
+        mode = "缁撳悎杩炵画鐢婚潰鍒ゆ柇褰撳墠鑺傚锛氬彲浠ュ噯澶囦笅涓€姝ワ紝涔熷彲浠ヨ嚜鐒舵帴璇濓紱鏈疆骞朵笉瑕佹眰寮€鍙ｃ€"
+    return (f"銆愯儗鏅噯澶囥】{mode} 鎶婃搷浣滆褰曞彂鐜伴棶棰樸€佸悗鍙扮淮鎶ゅ拰鑷劧浜ゆ祦鏀捐繘鍚屼竴涓垽鏂細"
+            "鍏堢湅鏄惁鏈夌敤鎴峰皻鏈В鍐崇殑闂锛屽啀鍐冲畾琛ヨ瘉鎹€佹帹杩涘府鍔┿€佺淮鎶ゃ€佽亰澶╂垨瀹夐潤锛涜嚜宸遍€夋嫨鏈€鍊煎緱缁х画鐨勪竴姝ワ紝涓嶆寜鍥哄畾涓婚杞浆銆"
+            "quiet 鍙喅瀹氭槸鍚﹀紑鍙ｏ紝涓嶄唬琛ㄥ悗鍙板仠姝紱鏈煡璧勬枡鍙兘鍊煎緱涓€娆″皬鏌ヨ锛岀湡瀹炲繀椤荤瓑寰呮墠鍐?waiting銆"
             "涓嶈涓€娆℃€ф壂瀹屾暣鍘嗗彶锛屾部鍏蜂綋鍋囪閫愭琛ヨ瘉鎹€傛瘮杈冪户缁師鏂规銆佹崲鏂瑰悜銆佸噯澶囦笅涓€姝ュ拰绛夊緟鐨勬敹鐩婏紝"
-            "鎶婇鏈熸敼鍠勩€侀獙璇佹柟寮忎笌缁撴灉鍐欒繘 WORKING.md锛岃€屼笉鏄负浜嗘湁浜嬪彲鍋氳€屽埗閫犱换鍔°€?
-            "鍩虹鏈嶅姟鍜屽叕鍏辨绱㈠彧鍦ㄨ兘鏀瑰彉褰撳墠鍒ゆ柇鎴栨敼鍠勪氦娴佹椂浣跨敤锛屼笉鑷姩鏌ユ瘡鏃ュぉ姘斻€?)
+            "鎶婇鏈熸敼鍠勩€侀獙璇佹柟寮忎笌缁撴灉鍐欒繘 WORKING.md锛岃€屼笉鏄负浜嗘湁浜嬪彲鍋氳€屽埗閫犱换鍔°€"
+            "鍩虹鏈嶅姟鍜屽叕鍏辨绱㈠彧鍦ㄨ兘鏀瑰彉褰撳墠鍒ゆ柇鎴栨敼鍠勪氦娴佹椂浣跨敤锛屼笉鑷姩鏌ユ瘡鏃ュぉ姘斻€")
 
 
 def conversation_fact(*, idle_s: float, now: float) -> str:
@@ -374,39 +374,39 @@ def conversation_fact(*, idle_s: float, now: float) -> str:
             continue
         if row.get("kind") == "reply":
             continue
-        role = "浠? if row.get("role") == "user" else "浣?
+        role = "浠" if row.get("role") == "user" else "浣"
         stamp = time.strftime("%m-%d %H:%M:%S", time.localtime(float(row.get("t", 0) or 0)))
-        transcript.append(f"{stamp} {role}锛歿str(row.get('text') or '')[:500]}")
+        transcript.append(f"{stamp} {role}：{str(row.get('text') or '')[:500]}")
     latest_assistant = max((index for index, row in enumerate(rows) if row.get("role") == "assistant"), default=-1)
     replied = any(row.get("role") == "user" for row in rows[latest_assistant + 1:])
     response_context = (
-        "鏈€杩戝紑鍙ｅ悗灏氭湭鏀跺埌浠栫殑鎺ヨ瘽锛涙病鏈夊洖搴斾笉绛変簬鎷掔粷锛屼篃涓嶈瘉鏄庝粬瀵逛綘寮曞叆鐨勬灊鑺傛劅鍏磋叮锛屽埆鑷姩缁璋冩煡缁撴灉銆?
+        "鏈€杩戝紑鍙ｅ悗灏氭湭鏀跺埌浠栫殑鎺ヨ瘽锛涙病鏈夊洖搴斾笉绛変簬鎷掔粷锛屼篃涓嶈瘉鏄庝粬瀵逛綘寮曞叆鐨勬灊鑺傛劅鍏磋叮锛屽埆鑷姩缁璋冩煡缁撴灉銆"
         if latest_assistant >= 0 and not replied else
-        "缁撳悎浠栧疄闄呭洖搴旂殑鍐呭鐞嗚В鍏磋叮涓庡垎姝э紝涓嶆妸浣犵殑鎻愰棶褰撴垚浠栧凡缁忚鍙殑璇濋銆?
+        "缁撳悎浠栧疄闄呭洖搴旂殑鍐呭鐞嗚В鍏磋叮涓庡垎姝э紝涓嶆妸浣犵殑鎻愰棶褰撴垚浠栧凡缁忚鍙殑璇濋銆"
     )
     turn_context = (
-        f"銆愬緟鍥炲簲璇濊疆 id={conversation.message_id(pending)}銆戜粬锛歿pending.get('text', '')}\n"
-        "杩欐槸瀵逛綘璇寸殑璇濓紝鍏堟帴浣忚繖涓剰鎬濓紝companion.reply_to 濉繖涓?id銆傚凡鏈変緷鎹冻澶熷氨鐩存帴鍥炵瓟锛?
-        "涓嶈涓轰簡鍥炵瓟鏅€氳亰澶╁厛鍋氬叏灞€鎵弿銆佽鏁翠唤绗旇鎴栨绱€傚綋鍓嶉〉闈㈠彉浜嗕笉绛変簬杩欏彞瀵硅瘽澶辨晥銆?
+        f"銆愬緟鍥炲簲璇濊疆 id={conversation.message_id(pending)}銆戜粬：{pending.get('text', '')}\n"
+        "杩欐槸瀵逛綘璇寸殑璇濓紝鍏堟帴浣忚繖涓剰鎬濓紝companion.reply_to 濉繖涓?id銆傚凡鏈変緷鎹冻澶熷氨鐩存帴鍥炵瓟锛"
+        "涓嶈涓轰簡鍥炵瓟鏅€氳亰澶╁厛鍋氬叏灞€鎵弿銆佽鏁翠唤绗旇鎴栨绱€傚綋鍓嶉〉闈㈠彉浜嗕笉绛変簬杩欏彞瀵硅瘽澶辨晥銆"
         if pending else
         "銆愬綋鍓嶆病鏈夊緟鍥炲簲璇濊疆銆戞棫闂鍙敤浜庣悊瑙ｏ紝涓嶅弽澶嶈ˉ绛斻€備笉瑕佹帴鐫€鑷繁鐨勬湭鑾峰洖搴旇鐐圭画璁诧紝"
-        "涔熶笉瑕佹妸灞忓箷閲岀殑淇姹囨姤褰撴垚缁欎綘鐨勬柊娑堟伅銆?
+        "涔熶笉瑕佹妸灞忓箷閲岀殑淇姹囨姤褰撴垚缁欎綘鐨勬柊娑堟伅銆"
     )
     return (
-        f"銆愬璇濈幇鍦恒€戠幇鍦?{time.strftime('%H:%M:%S', time.localtime(now))}锛?
+        f"銆愬璇濈幇鍦恒€戠幇鍦?{time.strftime('%H:%M:%S', time.localtime(now))}锛"
         f"閿紶闈欐 {idle_s:.0f} 绉掞紝杩欐槸鑺傚绾跨储锛屼笉鏄亰澶╁紑鍏筹紝涔熶笉璇佹槑浠栫寮€銆俓n"
         "浠呴檮鏈€杩戠殑鐪熷疄浜ゆ祦锛屾棫浜嬩笉褰撳綋鍓嶄簨瀹炪€傚伐浣滆繘琛屼腑涔熷彲浠ヨ亰銆俓n" + turn_context + "\n" + response_context + "\n"
-        + ("\n".join(transcript) if transcript else "浣犱滑杩樻病鏈夊疄闄呭璇濓紝鍙粨鍚堢敾闈㈣嚜鐒跺紑涓€涓瘽棰樸€?)
+        + ("\n".join(transcript) if transcript else "浣犱滑杩樻病鏈夊疄闄呭璇濓紝鍙粨鍚堢敾闈㈣嚜鐒跺紑涓€涓瘽棰樸€")
     )
 
 
 def new_feedback(since: float) -> str:
-    """鑷笂娆′互鏉ョ敤鎴疯杩囩殑璇濆拰瀵规彁璁殑鍥炲簲锛屼氦缁欐ā鍨嬫潈琛★紙涓嶆槸鍛戒护锛夈€?""
-    lines = [f"- 鐢ㄦ埛鍙嶉锛坽r.get('kind', 'outcome')}锛夛細{r['text']}" for r in _rows(FEEDBACK) if r.get("t", 0) > since]
-    lines += [f"- 鐢ㄦ埛瀵逛綘鐨勬彁璁€渰r.get('text', '')}鈥濈殑鍥炲簲锛歿r['result']}"
+    """鑷笂娆′互鏉ョ敤鎴疯杩囩殑璇濆拰瀵规彁璁殑鍥炲簲锛屼氦缁欐ā鍨嬫潈琛★紙涓嶆槸鍛戒护锛夈€"""
+    lines = [f"- 鐢ㄦ埛鍙嶉（{r.get('kind', 'outcome')}锛夛細{r['text']}" for r in _rows(FEEDBACK) if r.get("t", 0) > since]
+    lines += [f"- 鐢ㄦ埛瀵逛綘鐨勬彁璁“{r.get('text', '')}鈥濈殑鍥炲簲：{r['result']}"
               for r in _rows(OFFERS) if r.get("result") in ("accepted", "dismissed") and r.get("t_answer", 0) > since]
     if not lines: return ""
-    return ("鐢ㄦ埛鍒氬垰瀵逛綘璇翠簡璇濓細鍏堢悊瑙ｄ粬鏄湪姝ｅ父鑱婂ぉ銆佹彁闂繕鏄弽棣堬紝涓嶆妸鏅€氶棶棰樺綋鎴愭敼杩涙剰瑙併€?
+    return ("鐢ㄦ埛鍒氬垰瀵逛綘璇翠簡璇濓細鍏堢悊瑙ｄ粬鏄湪姝ｅ父鑱婂ぉ銆佹彁闂繕鏄弽棣堬紝涓嶆妸鏅€氶棶棰樺綋鎴愭敼杩涙剰瑙併€"
             "鐢ㄩ€旀爣绛炬槸鏈湴绮楀垎绫伙紝鍙兘鏈夎锛屼互鍘熸枃鍜屽璇濅负鍑嗐€傚弽棣堢敤浜庢牎鍑嗗垽鏂紝涓嶈兘褰撲綔鎵ц鎺堟潈鎴栧拷鐣ョ湡瀹為棶棰樸€俓n"
             + "\n".join(lines))
 
@@ -429,7 +429,7 @@ def watching_fact(watcher, thumb, idle_s: float | None = None) -> str:
 
 
 def system_fact(sysw) -> str:
-    """瑙嗚鐪嬩笉瑙佺殑閭ｉ儴鍒嗭細C 鐩樸€佸唴瀛樸€佸崰璧勬簮鐨勮繘绋嬨€傛甯稿氨绌轰覆锛岀粷涓嶅鍢淬€?""
+    """瑙嗚鐪嬩笉瑙佺殑閭ｉ儴鍒嗭細C 鐩樸€佸唴瀛樸€佸崰璧勬簮鐨勮繘绋嬨€傛甯稿氨绌轰覆锛岀粷涓嶅鍢淬€"""
     try:
         return sysw.observe().line()
     except Exception:
@@ -473,7 +473,7 @@ class MaintenanceSignal:
 
 
 def memory_fact() -> str:
-    """浠栨渶杩戞帴鍙楄繃/鎷掔粷杩囦粈涔堛€傜煭鍒版病鏈夋垚鏈紝浣嗚兘闃叉鈥滄崲涓娉曞啀鎻愪竴閬嶁€濄€?""
+    """浠栨渶杩戞帴鍙楄繃/鎷掔粷杩囦粈涔堛€傜煭鍒版病鏈夋垚鏈紝浣嗚兘闃叉鈥滄崲涓娉曞啀鎻愪竴閬嶁€濄€"""
     try:
         return memory.brief(HOME)
     except Exception:
@@ -501,7 +501,7 @@ def model_response(request):
 
 
 class DirectReply:
-    """瀵归綈瀹瑰櫒鍚庣鐨勫洖鍖呭舰鐘讹紙brain 鍙杩欏嚑涓瓧娈碉級銆?""
+    """瀵归綈瀹瑰櫒鍚庣鐨勫洖鍖呭舰鐘讹紙brain 鍙杩欏嚑涓瓧娈碉級銆"""
 
     def __init__(self, text: str = "", returncode: int = 0, boundary: str | None = "turn"):
         self.final_message = text
@@ -543,7 +543,7 @@ class _LegacyDirectBackend:
             with urllib.request.urlopen(req, timeout=180) as r:
                 d = _json.loads(r.read().decode())
         except Exception as e:
-            print(f"[brain] 妯″瀷璋冪敤澶辫触锛歿type(e).__name__}", flush=True)
+            print(f"[brain] 妯″瀷璋冪敤澶辫触：{type(e).__name__}", flush=True)
             return DirectReply("")
         text = "".join(c.get("text", "") for c in d.get("content", []) if c.get("type") == "text").strip()
         if text:
@@ -552,7 +552,7 @@ class _LegacyDirectBackend:
 
 
 def _extract_text(task_input) -> str:
-    """浠?VISTA 鍑嗗濂界殑杈撳叆閲屽彇鍑烘湰杞殑鍏紑鏂囧瓧锛堟嬁涓嶅埌灏辫繑鍥炵┖锛夈€?""
+    """浠?VISTA 鍑嗗濂界殑杈撳叆閲屽彇鍑烘湰杞殑鍏紑鏂囧瓧锛堟嬁涓嶅埌灏辫繑鍥炵┖锛夈€"""
     for attr in ("public_text", "text", "prompt"):
         v = getattr(task_input, attr, None)
         if isinstance(v, str) and v.strip():
@@ -706,8 +706,8 @@ class VisualDirectBackend:
         now = time.time()
         feedback = new_feedback(self.feedback_since)
         self.feedback_since = now
-        text = ("銆愮幇鍦烘洿鏂般€戣皟鏌ユ湡闂寸敾闈㈡垨鐢ㄦ埛娑堟伅鍙戠敓浜嗗彉鍖栥€傝繖鏄柊鐨?CURRENT锛屾棫瑙傚療浠嶇敱 VISTA history 淇濈暀銆?
-                "鍏堝垽鏂洰鏍囨槸鍚﹀欢缁€佹棫闂鏄惁浠嶅湪锛涗繚鐣欐湁鐢ㄦ垚鏋滐紝鏆傚仠宸茬粡涓嶇浉鍏崇殑璋冩煡锛岄噸鏂版瘮杈冧笅涓€姝ャ€?
+        text = ("銆愮幇鍦烘洿鏂般€戣皟鏌ユ湡闂寸敾闈㈡垨鐢ㄦ埛娑堟伅鍙戠敓浜嗗彉鍖栥€傝繖鏄柊鐨?CURRENT锛屾棫瑙傚療浠嶇敱 VISTA history 淇濈暀銆"
+                "鍏堝垽鏂洰鏍囨槸鍚﹀欢缁€佹棫闂鏄惁浠嶅湪锛涗繚鐣欐湁鐢ㄦ垚鏋滐紝鏆傚仠宸茬粡涓嶇浉鍏崇殑璋冩煡锛岄噸鏂版瘮杈冧笅涓€姝ャ€"
                 "涓嶈兘鐩存帴鍙戝竷鎴栨墽琛屽熀浜庢棫鐜板満鐨勫喅瀹氥€俓n" + feedback + "\n"
                 + conversation_fact(idle_s=watching.idle_seconds(), now=now))
         task_input = self.runtime.prepare_input(Phase.STEP, public_text=text,
@@ -803,10 +803,10 @@ class VisualDirectBackend:
                               "browser_inventory_pages": browser_pages, "browser_observations": browser_observations,
                               "latest_history_page": history_pages[-1] if history_pages else None,
                               "local_reads": local_reads}, ensure_ascii=False)
-                + "\n鐩綍鍏抽敭璇嶅尮閰嶄笉绛変簬鏌ヨ繃鎿嶄綔鍘嗗彶锛涙湭璇诲彇鐨勬潵婧愪粛鏈煡銆傜炕椤垫湭缁撴潫鎴栨潵婧愬け璐ヤ笉鑳藉綋浣滃凡瑕嗙洊銆?
-                "history_pages_read 鍙妯″瀷宸ュ叿璇诲彇锛岀幆澧冩彁渚涚殑鐪熷疄灏忛〉鍙﹀垪浜庝笂涓嬫枃锛涢浂娆″伐鍏疯鍙栦笉浠ｈ〃灏忛〉娌℃彁渚涖€?
+                + "\n鐩綍鍏抽敭璇嶅尮閰嶄笉绛変簬鏌ヨ繃鎿嶄綔鍘嗗彶锛涙湭璇诲彇鐨勬潵婧愪粛鏈煡銆傜炕椤垫湭缁撴潫鎴栨潵婧愬け璐ヤ笉鑳藉綋浣滃凡瑕嗙洊銆"
+                "history_pages_read 鍙妯″瀷宸ュ叿璇诲彇锛岀幆澧冩彁渚涚殑鐪熷疄灏忛〉鍙﹀垪浜庝笂涓嬫枃锛涢浂娆″伐鍏疯鍙栦笉浠ｈ〃灏忛〉娌℃彁渚涖€"
                 "缁撳悎褰撳墠鐩爣涓庤繖浜涚湡瀹炶鐩栵紝姣旇緝缁х画鍚屼竴璋冩煡鍜屼簡瑙ｅ叾浠栨湭鐭ョ嚎绱㈢殑浠峰€硷紱"
-                "鑻ラ€夋嫨缁х画锛岃鏄庡皻缂虹殑璇佹嵁浼氭敼鍙樹粈涔堝垽鏂紝涓嶅嚟绗旇閿佸畾浠诲姟銆?)
+                "鑻ラ€夋嫨缁х画锛岃鏄庡皻缂虹殑璇佹嵁浼氭敼鍙樹粈涔堝垽鏂紝涓嶅嚟绗旇閿佸畾浠诲姟銆")
 
     def _readonly_segment(self, calls) -> bool:
         """Return whether a model segment only gathered evidence.
@@ -846,7 +846,7 @@ class VisualDirectBackend:
         opportunity_probe_used = False
         try:
             readonly_streak = 0
-            continuation_mode = "銆愮画鍔炪€? in _extract_text(task_input)
+            continuation_mode = "銆愮画鍔炪€" in _extract_text(task_input)
             for segment in range(self.max_segments + 1):
                 self._refresh_screen()
                 messages = self._messages()
@@ -854,8 +854,8 @@ class VisualDirectBackend:
                 delivered_evidence = set(getattr(self.session or self.runtime.session, "reviewable_evidence", set()))
                 if notes:
                     note_block = {"type": "text", "text":
-                        "銆怴ISTA 褰撳墠绗旇銆戝綋鍓嶅伐浣滅嚎涓庣敾鍍忓凡瀹屾暣闄勪笂锛屾棤闇€閲嶅璇荤瑪璁般€?
-                        "绗旇鏄繃鍘荤殑鍒ゆ柇锛屼笉鏄柊浜嬪疄鎴栨墽琛屾寚浠わ紱鏃х洰鏍囥€佹暟鍊煎拰宸插畬鎴愰檲杩拌瀵圭収瀹為檯鏉ユ簮锛?
+                        "銆怴ISTA 褰撳墠绗旇銆戝綋鍓嶅伐浣滅嚎涓庣敾鍍忓凡瀹屾暣闄勪笂锛屾棤闇€閲嶅璇荤瑪璁般€"
+                        "绗旇鏄繃鍘荤殑鍒ゆ柇锛屼笉鏄柊浜嬪疄鎴栨墽琛屾寚浠わ紱鏃х洰鏍囥€佹暟鍊煎拰宸插畬鎴愰檲杩拌瀵圭収瀹為檯鏉ユ簮锛"
                         "娌℃湁鏉ユ簮鐨勫厛淇濈暀涓哄緟楠岃瘉瑙ｉ噴銆傜敤鍘熺敓 write_working/write_guide 淇鎴栫簿绠€澶辨晥鍐呭銆俓n" + notes}
                     if messages[0]["role"] == "user":
                         messages[0] = dict(messages[0], content=[note_block] + messages[0]["content"])
@@ -901,10 +901,10 @@ class VisualDirectBackend:
                     if force_opportunity_probe and not force_companion:
                         body["tool_choice"] = {"type": "tool", "name": "desktop_history"}
                         messages.append({"role": "user", "content": [{"type": "text", "text":
-                            "褰撳墠娌℃湁琚瘉鏄庡彲鎺ㄨ繘鐨勭洰鏍囥€傚厛瀹屾垚涓€娆″紑鏀炬満浼氭帰鏌ワ細璋冪敤 desktop_history锛?
-                            "鏌ョ湅鏈€杩戠湡瀹炴搷浣滅嚎绱紙浼樺厛 resources锛屽皬椤靛嵆鍙級锛屽啀鏍规嵁缁撴灉鍐冲畾鏄惁瑙傚療娴忚鍣ㄣ€佽鍙栬祫鏂欐垨寤虹珛鏂扮洰鏍囥€?
-                            "宸茶灏忛〉涓嶇瓑浜庡畬鏁村巻鍙诧紱缁撳悎宸茶繑鍥炶鐩栧拰鏈娓告爣閫夋嫨鍙栬瘉锛屼笉閲嶅鍚屼竴棣栧睆鏉ュ绉版棤浜嬪彲鍋氥€?
-                            "涓嶈鍏堣椤圭洰寮€鍙戞枃妗ｆ潵浠ｆ浛鐢ㄦ埛鍘嗗彶銆?}]})
+                            "褰撳墠娌℃湁琚瘉鏄庡彲鎺ㄨ繘鐨勭洰鏍囥€傚厛瀹屾垚涓€娆″紑鏀炬満浼氭帰鏌ワ細璋冪敤 desktop_history锛"
+                            "鏌ョ湅鏈€杩戠湡瀹炴搷浣滅嚎绱紙浼樺厛 resources锛屽皬椤靛嵆鍙級锛屽啀鏍规嵁缁撴灉鍐冲畾鏄惁瑙傚療娴忚鍣ㄣ€佽鍙栬祫鏂欐垨寤虹珛鏂扮洰鏍囥€"
+                            "宸茶灏忛〉涓嶇瓑浜庡畬鏁村巻鍙诧紱缁撳悎宸茶繑鍥炶鐩栧拰鏈娓告爣閫夋嫨鍙栬瘉锛屼笉閲嶅鍚屼竴棣栧睆鏉ュ绉版棤浜嬪彲鍋氥€"
+                            "涓嶈鍏堣椤圭洰寮€鍙戞枃妗ｆ潵浠ｆ浛鐢ㄦ埛鍘嗗彶銆"}]})
                         opportunity_probe_used = True
                     else:
                         body["tool_choice"] = (
@@ -913,10 +913,10 @@ class VisualDirectBackend:
                         )
                     if force_companion:
                         messages.append({"role": "user", "content": [{"type": "text", "text":
-                            "鏈疆鍗冲皢鍒拌揪浼犺緭涓婇檺锛屾垨杩炵画璋冩煡/澶辫触鍔ㄤ綔娌℃湁鏂板鍙敤璇佹嵁銆?
-                            "鐜板湪璋冪敤 companion 淇濆瓨杩涘睍涓庝笅涓€姝ワ紱鍚庡彴闃舵鍙互 quiet锛屼笉瑕佹眰寮€鍙ｃ€?
-                            "濉啓 next_step锛坮eady=涓€涓叿浣撳悗缁姩浣滐紝waiting=鏄庣‘缂轰粈涔堬紝done=宸插畬鎴愶級銆?
-                            "涓嶈鍐嶈皟鐢ㄦ悳绱€佽绗旇鎴?history锛屼篃涓嶈鍙緭鍑烘枃瀛椼€?}]})
+                            "鏈疆鍗冲皢鍒拌揪浼犺緭涓婇檺锛屾垨杩炵画璋冩煡/澶辫触鍔ㄤ綔娌℃湁鏂板鍙敤璇佹嵁銆"
+                            "鐜板湪璋冪敤 companion 淇濆瓨杩涘睍涓庝笅涓€姝ワ紱鍚庡彴闃舵鍙互 quiet锛屼笉瑕佹眰寮€鍙ｃ€"
+                            "濉啓 next_step锛坮eady=涓€涓叿浣撳悗缁姩浣滐紝waiting=鏄庣‘缂轰粈涔堬紝done=宸插畬鎴愶級銆"
+                            "涓嶈鍐嶈皟鐢ㄦ悳绱€佽绗旇鎴?history锛屼篃涓嶈鍙緭鍑烘枃瀛椼€"}]})
                 req = urllib.request.Request(
                     self.cfg["base_url"].rstrip("/") + "/v1/messages",
                     data=_json.dumps(body).encode(),
@@ -941,7 +941,7 @@ class VisualDirectBackend:
                     "cache_creation_input_tokens": usage.get("cache_creation_input_tokens"),
                     "request_bytes": len(req.data),
                     "execution_context_copies": sum(
-                        block.get("text", "").count("銆愭墽琛岃繘搴︼紝涓嶆槸鎺㈢储鏂瑰悜銆?)
+                        block.get("text", "").count("銆愭墽琛岃繘搴︼紝涓嶆槸鎺㈢储鏂瑰悜銆")
                         for message in messages for block in message["content"]),
                     "images": sum(block.get("type") == "image" for message in messages for block in message["content"]),
                     "tools": [call.get("name") for call in calls], "stop_reason": payload.get("stop_reason")})
@@ -952,8 +952,8 @@ class VisualDirectBackend:
                     agenda.mark_delivered(delivered_revision)
                 if not calls:
                     self.history.append({"role": "user", "content": [{"type": "text", "text":
-                        "鏈疆娌℃湁鏀跺埌宸ュ叿璋冪敤銆備笉瑕佺户缁啓鍒嗘瀽锛涚珛鍗宠皟鐢?companion锛氱洿鎺ュ洖绛斿緟鍥炲簲娑堟伅锛?
-                        "鎴栫敤 quiet 鏀跺熬骞跺～鍐?next_step銆備笉瑕佸啀璋冪敤 read_guide/read_working锛屽綋鍓嶇瑪璁板凡闄勪笂銆?}]})
+                        "鏈疆娌℃湁鏀跺埌宸ュ叿璋冪敤銆備笉瑕佺户缁啓鍒嗘瀽锛涚珛鍗宠皟鐢?companion锛氱洿鎺ュ洖绛斿緟鍥炲簲娑堟伅锛"
+                        "鎴栫敤 quiet 鏀跺熬骞跺～鍐?next_step銆備笉瑕佸啀璋冪敤 read_guide/read_working锛屽綋鍓嶇瑪璁板凡闄勪笂銆"}]})
                     continue
                 results = []
                 for call in calls:
@@ -979,14 +979,14 @@ class VisualDirectBackend:
                     if boundary or (stale and spec is not None and spec.effect == Effect.ENVIRONMENT):
                         results.append({"type": "tool_result", "tool_use_id": call_id, "is_error": True,
                                         "content": [{"type": "text", "text":
-                                            "鏈墽琛岋細鐜板満宸叉湁鍙樺寲锛岃鍏堣鍙栨柊鐨?CURRENT 鍚庨噸鏂板垽鏂€?
-                                            if not boundary else "鏈墽琛岋細杩欎竴杞凡缁忕粨鏉熴€?}]})
+                                            "鏈墽琛岋細鐜板満宸叉湁鍙樺寲锛岃鍏堣鍙栨柊鐨?CURRENT 鍚庨噸鏂板垽鏂€"
+                                            if not boundary else "鏈墽琛岋細杩欎竴杞凡缁忕粨鏉熴€"}]})
                         continue
                     if (call.get("name") == "desktop_review_evidence"
                             and call.get("input", {}).get("id") not in delivered_evidence):
                         results.append({"type": "tool_result", "tool_use_id": call_id, "is_error": True,
                                         "content": [{"type": "text", "text":
-                                            "璇峰厛鎺ユ敹骞舵煡鐪嬫埅鍥惧伐鍏疯繑鍥炵殑瀹為檯鍥剧墖锛屽啀鏍搁獙锛涗笉鑳藉湪鍚屼竴璇锋眰涓鍏堥€氳繃鏈鎴浘銆?}]})
+                                            "璇峰厛鎺ユ敹骞舵煡鐪嬫埅鍥惧伐鍏疯繑鍥炵殑瀹為檯鍥剧墖锛屽啀鏍搁獙锛涗笉鑳藉湪鍚屼竴璇锋眰涓鍏堥€氳繃鏈鎴浘銆"}]})
                         continue
                     execution = self.runtime.execute(call.get("name"), call.get("input", {}), call_id)
                     if (call.get("name") == "desktop_history" and execution.success
@@ -1002,7 +1002,7 @@ class VisualDirectBackend:
                     if spec is None:
                         result_content.append({"type": "text", "text":
                             "杩欎釜宸ュ叿鏈彁渚涳紝涓嶈兘鎵ц銆傚疄闄呭彲鐢ㄥ伐鍏凤細" + ", ".join(tool["name"] for tool in tools)
-                            + "銆傜敤瀹為檯宸ュ叿琛ヨ瘉鎹紱鑳藉姏缂哄彛濡傚疄淇濈暀锛屼笉鑳界寽宸ュ叿鍚嶅綋浣滆鍔ㄣ€?})
+                            + "銆傜敤瀹為檯宸ュ叿琛ヨ瘉鎹紱鑳藉姏缂哄彛濡傚疄淇濈暀锛屼笉鑳界寽宸ュ叿鍚嶅綋浣滆鍔ㄣ€"})
                     for visual in execution.images:
                         if visual.get("steer_text"):
                             result_content.append({"type": "text", "text": visual["steer_text"]})
@@ -1081,7 +1081,7 @@ def build(cfg: dict, root: Path):
     from vista.benchmarks.desktop.profiles import make_experiment, make_profile
     from vista.benchmarks.desktop.session import DesktopSession
     from vista.core.runtime import TaskRuntime
-    session = DesktopSession("浣犳槸闄湪鐢ㄦ埛韬竟鐨勫皬绮剧伒锛氱粨鍚堟寔缁敾闈笌鐪熷疄鎿嶄綔鐥曡抗鐞嗚В鐩爣锛岃嚜涓诲彂鐜板€煎緱甯姪鐨勪簨鎯呫€佸噯澶囦笅涓€姝ワ紱鐪嬪噯鏃舵満浜ゆ祦鎴栨姤鍛婃湁鐢ㄧ殑缁撴灉銆?, {})
+    session = DesktopSession("浣犳槸闄湪鐢ㄦ埛韬竟鐨勫皬绮剧伒锛氱粨鍚堟寔缁敾闈笌鐪熷疄鎿嶄綔鐥曡抗鐞嗚В鐩爣锛岃嚜涓诲彂鐜板€煎緱甯姪鐨勪簨鎯呫€佸噯澶囦笅涓€姝ワ紱鐪嬪噯鏃舵満浜ゆ祦鎴栨姤鍛婃湁鐢ㄧ殑缁撴灉銆", {})
     # Preserve the configured provider endpoint/credential, but select the
     # requested model explicitly so both Claude Code and direct fallback use
     # the same model id.  Do not rewrite provider configuration here.
@@ -1119,12 +1119,12 @@ def build(cfg: dict, root: Path):
         print(f"[brain] Claude backend: host-native ({binary})", flush=True)
         return session, runtime, backend, "host-native-unsandboxed"
     except Exception as e:                       # 瀹瑰櫒/闀滃儚/浼犺緭璧蜂笉鏉ワ紝涓嶈璁╂暣涓?brain 姝绘帀
-        print(f"[brain] Claude Docker 涓嶅彲鐢紙{type(e).__name__}: {str(e)[:80]}锛夛紝鏄惧紡闄嶇骇涓?direct-fallback锛堟棤娌欑锛?, flush=True)
+        print(f"[brain] Claude Docker 涓嶅彲鐢紙{type(e).__name__}: {str(e)[:80]}锛夛紝鏄惧紡闄嶇骇涓?direct-fallback锛堟棤娌欑锛", flush=True)
         return session, runtime, VisualDirectBackend(selected_cfg, runtime), "direct-fallback"
 
 
 def restore_guide(runtime) -> None:
-    """鎶婁笂娆′繚瀛樼殑闀挎湡鐞嗚В鏀惧洖鏈浼氳瘽鐨?GUIDE.md銆?""
+    """鎶婁笂娆′繚瀛樼殑闀挎湡鐞嗚В鏀惧洖鏈浼氳瘽鐨?GUIDE.md銆"""
     if GUIDE.exists() and runtime.context.guide_path:
         shutil.copyfile(GUIDE, runtime.context.guide_path)
     if WORKING.exists() and runtime.context.working_path:
@@ -1177,7 +1177,7 @@ def reset_current() -> None:
     """Avoid showing a previous session's stale judgment while a new one starts."""
     PERCEIVE.mkdir(parents=True, exist_ok=True)
     temporary = PERCEIVE / "current.json.tmp"
-    row = {"t": time.time(), "activity": "姝ｅ湪閲嶆柊鐪嬪綋鍓嶇敾闈?, "state": "鏂颁細璇濆凡鍚姩锛屾鍦ㄥ缓绔嬭繛缁笂涓嬫枃", "source": "vista"}
+    row = {"t": time.time(), "activity": "姝ｅ湪閲嶆柊鐪嬪綋鍓嶇敾闈", "state": "鏂颁細璇濆凡鍚姩锛屾鍦ㄥ缓绔嬭繛缁笂涓嬫枃", "source": "vista"}
     try:
         temporary.write_text(json.dumps(row, ensure_ascii=False), encoding="utf-8")
         temporary.replace(PERCEIVE / "current.json")
@@ -1215,7 +1215,7 @@ def run() -> None:
     history_line = historyw.observe(time.time())
     if isinstance(backend, VisualDirectBackend):
         backend.history_context = historyw.context
-    print(f"[brain] 浼氳瘽宸插缓绔嬶紙{mode}閫氶亾锛夛細鎸佺画瑙嗚涓婁笅鏂囧紑濮?, flush=True)
+    print(f"[brain] 浼氳瘽宸插缓绔嬶紙{mode}閫氶亾锛夛細鎸佺画瑙嗚涓婁笅鏂囧紑濮", flush=True)
     initial_now = time.time()
     initial_maintenance = maintenance.observe(initial_now, refresh=True)
     initial_revision = agenda.revision
@@ -1281,7 +1281,7 @@ def run() -> None:
                                 _d.get("trigger_app"), _d.get("trigger_type"), _d.get("trigger_title")) if v]
                             _anchor = "/".join(_bits)
                             if _anchor or mo.key:
-                                timing_why_extra = f"锛堣Е鍙戝璞★細{_anchor or '鏈煡'}锛岄敭 {mo.key}锛?
+                                timing_why_extra = f"锛堣Е鍙戝璞★細{_anchor or '鏈煡'}锛岄敭 {mo.key}锛"
                             else:
                                 timing_why_extra = ""
                         except Exception:
@@ -1298,7 +1298,7 @@ def run() -> None:
                     except OSError:
                         pass
                 except Exception as exc:
-                    print(f"[brain] timing 鍒ゆ柇澶辫触锛歿exc!r}", flush=True)
+                    print(f"[brain] timing 鍒ゆ柇澶辫触：{exc!r}", flush=True)
             prep_due = (not fb) and (maintenance_due or history_due or heartbeat_due or (turn_count and turn_count % PREP_EVERY_TURNS == 0))
             decision = session.decisions[-1] if session.decisions else {}
             evidence_revision = getattr(session, "evidence_revision", 0)
@@ -1327,15 +1327,15 @@ def run() -> None:
             idle_s = current_idle_s
             if prep_due:
                 cycle = idle_scan_fact(heartbeat=True, idle_s=idle_s, now=now)
-                lead = "杩欐槸涓€娆¤儗鏅噯澶囪疆銆?
+                lead = "杩欐槸涓€娆¤儗鏅噯澶囪疆銆"
             else:
                 cycle = ""
-                lead = "杩欐槸涓€娆″疄鏃跺伐浣滆疆銆?
-            text = ((fb + "\n") if fb else "") + lead + "鍏堢湅 CURRENT锛岄渶瑕佹椂鐢?history 鍥炵湅涔嬪墠鐨勭敾闈紱鍐嶇敤 companion 宸ュ叿鍐冲畾姝ゅ埢璇翠粈涔堬紙鎴栧畨闈欙級銆?
+                lead = "杩欐槸涓€娆″疄鏃跺伐浣滆疆銆"
+            text = ((fb + "\n") if fb else "") + lead + "鍏堢湅 CURRENT锛岄渶瑕佹椂鐢?history 鍥炵湅涔嬪墠鐨勭敾闈紱鍐嶇敤 companion 宸ュ叿鍐冲畾姝ゅ埢璇翠粈涔堬紙鎴栧畨闈欙級銆"
             if continue_due:
                 text += "\n銆愮画鍔炪€戣繖鏄綘閫夋嫨鐨勫彲缁х画涓嬩竴姝ワ紝涓嶇瓑寰呴〉闈㈠彉鍖栨垨鐢ㄦ埛寮€鍙ｏ細" + json.dumps(
                     continuations.step, sort_keys=True, ensure_ascii=False)
-                text += "銆傚厛鎺ㄨ繘骞舵牳瀵圭粨鏋滐紝鍐嶆牴鎹柊澧炶瘉鎹喅瀹氱户缁€佹敼杩涙垨鎹㈡柟鍚戙€傚畨闈欏噯澶囦篃搴旀帹杩涳紱鍙湁宸ュ叿鏃犳硶鑷鍙栧緱鐨勫閮ㄦ潯浠舵墠绛夊緟銆?
+                text += "銆傚厛鎺ㄨ繘骞舵牳瀵圭粨鏋滐紝鍐嶆牴鎹柊澧炶瘉鎹喅瀹氱户缁€佹敼杩涙垨鎹㈡柟鍚戙€傚畨闈欏噯澶囦篃搴旀帹杩涳紱鍙湁宸ュ叿鏃犳硶鑷鍙栧緱鐨勫閮ㄦ潯浠舵墠绛夊緟銆"
             if cycle:
                 text += "\n" + cycle
             if mf: text += "\n" + mf

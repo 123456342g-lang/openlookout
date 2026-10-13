@@ -115,8 +115,25 @@ python -m vista.benchmarks.desktop.brain   # 只跑大脑（调试）
 - **窗口体验**：气泡、对话框、陪伴状态动画（`sprite/gui.py`、`dialog.py`）。
 - **成本与频率**：触发条件、缩略图阈值、心跳、模型选择。
 
-## 协作约定
+## 协作约定（多 agent · GitHub）
 
-- 认领与进度写在根目录 `STATUS.md` / `TASKS.md`（既有看板）。改别人进行中的范围前先留言。
-- 提交前：`git grep -nE "tp-|sk-ant|SPRITE_API_KEY="` 不得出现真实密钥（`.env.example` 里只能是占位符）。
-- 改动 `profiles.py` 提示词后，监督进程会自动热更新；用 `sprite_home/brain.log` 和 `perceive/offers.jsonl` 观察效果。
+仓库：`github.com/123456342g-lang/openlookout`（私有，公开发布时翻转）。分支 `main`。
+
+**铁律四条**（2026-10-13 教训：两个代理同时写 brain.py，互相覆盖，烧掉四十分钟）：
+
+1. **隔离** —— 一个 agent 一个分支（`fix/…` / `feat/…` / `chore/…`），禁止直推 `main`。
+   并行改同一仓库时用 `git worktree add ../openlookout-<任务名>` 各拿独立工作区，杜绝文件互踩。
+2. **挂牌** —— 动共享文件（`brain.py`、`profiles.py`、`runner.py`、`live.py`、`session.py`）前，
+   先在对应 issue 里认领；同一文件同时只允许一个 agent 改。没挂牌就等于没开工。
+3. **队列** —— 任务全部挂 issue（带优先级标签）；agent 做完关 issue，附验证证据
+   （测试输出、日志行、`file:行号`），不许只写"已完成"。
+4. **闸门** —— 所有合并走 PR，由主理人执行；测试不过不合并。
+   注意：GitHub 免费**私有**仓不提供 required-review 分支保护（API 403，需 Pro 或公开），
+   私有期闸门靠本协议 + 主理人合并；**公开发布当天开启分支保护**（见 issue 清单）。
+
+GitHub 操作约定：
+- 提交信息写清"改了什么、为什么"，关键判断附 `file:行号` 证据。
+- 提交前必跑：`git grep -nE "tp-|sk-ant|SPRITE_API_KEY="` 不得出现真实密钥（`.env.example` 只能是占位符）。
+- `.env`、`provider.json`、`sprite_home/` 永不入库（已 .gitignore）；截图/录屏只在本机与配置的模型服务间流动。
+- 认领与进度写在 issue；根目录 `STATUS.md` / `TASKS.md` 是给项目负责人看的状态板，不是 agent 的工作队列。
+- 外部动作（公开发布、提 issue 到别的仓库、发帖）先问项目负责人；内部动作（读、扫、写分支、跑测试）自主做。
