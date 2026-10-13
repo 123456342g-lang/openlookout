@@ -156,6 +156,38 @@ def run_offer(offer: dict, show) -> None:
     show(dict(kind="action", text=final[:300], action_id=offer.get("id") or "help"))
 
 
+def run_risk_batch(offer: dict, show) -> None:
+    """执行已批准的风险分级批次：只做提议里列出的那几条。
+
+    与 `run_offer` 的区别是这里**不再起一次模型运行**。用户点头批准的是那份
+    具体清单（3 份交付物），所以执行的就该是那 3 份；再让模型自己决定一遍，
+    批准范围就变了。TTL 过期在这里被 `permissions.execute` 挡住，一条都不做。
+    """
+    from vista.benchmarks.desktop import permissions
+
+    results = permissions.execute(offer)
+    ok = [r for r in results if r.get("success")]
+    bad = [r for r in results if not r.get("success")]
+    report = _batch_report(results)
+    record_offer_result(offer, "auto_completed" if ok and not bad else "auto_no_answer",
+                        mutations=len(ok), items=len(results), report=report)
+    if not ok or bad:
+        show(dict(kind="say", text=report))
+        return
+    show(dict(kind="action", text=report, action_id=offer.get("id") or "batch"))
+
+
+def _batch_report(results: list[dict]) -> str:
+    ok = sum(1 for r in results if r.get("success"))
+    total = len(results)
+    if ok == total:
+        return f"按你的同意做了 {total} 件事，随时可以撤回。"
+    if ok:
+        # 部分失败必须说清「做了几件、没做几件」，不能笼统说完成。
+        return f"{total} 件事里做成了 {ok} 件，其余没做成；我没有多做别的。"
+    return "这一批没有做成，电脑状态没有被改动。"
+
+
 def undo_offer() -> str:
     """撤回 Claude Code 在这次帮忙里记录的所有操作。"""
     code = "from vista.benchmarks.desktop.actions import undo; print(undo({}).text)"
@@ -380,6 +412,12 @@ def run_gui() -> None:
                 present(msg, 120, event_id=f"{offer.get('id')}:completed")
                 root.after(120000, lambda: offer_state.update(running=None))
             root.after(0, deliver)
+
+        if offer.get("items"):
+            # 风险分级批次：执行提议里**逐条列出的**操作，不重新让模型决定一遍。
+            # 批准的是这份清单 —— 若改成再跑一次任务，点头批准的范围就被悄悄放大了。
+            threading.Thread(target=run_risk_batch, args=(offer, report), daemon=True).start()
+            return
         threading.Thread(target=run_offer, args=(offer, report), daemon=True).start()
 
     def on_expire() -> None:

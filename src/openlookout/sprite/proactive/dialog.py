@@ -12,7 +12,11 @@ from typing import Callable
 
 from ..gui import BG, BTN, BTN_TXT, EDGE, FONT, TXT
 
-CARD_W, PAD, GAP = 360, 14, 12
+# 卡片宽度与字号。原先 CARD_W=360 配 9号字，一屏放不下几句话，字号也偏小；
+# 放大到 480/12号 后一屏能看完整段对话，且不用眯眼。
+CARD_W, PAD, GAP = 480, 16, 12
+BODY_FONT = 12# 对话正文 / 输入框字号（跟随气泡的 14 号略微收一档）
+HEAD_FONT = 13
 MUTED, SOFT = "#5a7b80", "#d6f5f8"
 INPUT_BG = "#f4fbfc"
 
@@ -26,31 +30,36 @@ class ChatDialog:
         card = tk.Frame(self.win, bg=BG, padx=PAD, pady=PAD); card.pack(padx=2, pady=2)
 
         head = tk.Frame(card, bg=BG); head.pack(fill="x")
-        tk.Label(head, text="小精灵", bg=BG, fg=TXT, font=(FONT[0], 10, "bold")).pack(side="left")
-        close = tk.Label(head, text="×", bg=BG, fg=MUTED, font=(FONT[0], 13), cursor="hand2")
+        tk.Label(head, text="小精灵", bg=BG, fg=TXT,
+                 font=(FONT[0], HEAD_FONT, "bold")).pack(side="left")
+        close = tk.Label(head, text="×", bg=BG, fg=MUTED, font=(FONT[0], HEAD_FONT + 3), cursor="hand2")
         close.pack(side="right"); close.bind("<Button-1>", lambda _e: self.close())
         tk.Frame(card, bg=SOFT, height=1).pack(fill="x", pady=(6, 8))
 
-        self.status = tk.Label(card, text=status, bg=BG, fg=MUTED, font=(FONT[0], 9), wraplength=CARD_W - 2 * PAD, justify="left", anchor="w")
+        self.status = tk.Label(card, text=status, bg=BG, fg=MUTED, font=(FONT[0], BODY_FONT),
+                               wraplength=CARD_W - 2 * PAD, justify="left", anchor="w")
         self.status.pack(fill="x")
         history_frame = tk.Frame(card, bg=BG)
         history_frame.pack(fill="both", expand=True, pady=(8, 0))
-        self.history_box = tk.Text(history_frame, height=11, width=40, wrap="word", state="disabled",
+        self.history_box = tk.Text(history_frame, height=13, width=52, wrap="word", state="disabled",
                                    bg=INPUT_BG, fg=TXT, relief="flat", padx=8, pady=6,
-                                   font=(FONT[0], 9), highlightthickness=1, highlightbackground=EDGE)
+                                   font=(FONT[0], BODY_FONT), highlightthickness=1,
+                                   highlightbackground=EDGE)
         scroll = tk.Scrollbar(history_frame, command=self.history_box.yview)
         self.history_box.configure(yscrollcommand=scroll.set)
         self.history_box.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
 
         row = tk.Frame(card, bg=BG); row.pack(fill="x", pady=(10, 0))
-        self.ent = tk.Entry(row, font=(FONT[0], 10), relief="flat", bg=INPUT_BG, fg=TXT, insertbackground=TXT,
-                            highlightthickness=1, highlightbackground=EDGE, highlightcolor=EDGE)
-        self.ent.pack(side="left", fill="x", expand=True, ipady=4)
+        self.ent = tk.Entry(row, font=(FONT[0], BODY_FONT), relief="flat", bg=INPUT_BG, fg=TXT,
+                            insertbackground=TXT, highlightthickness=1,
+                            highlightbackground=EDGE, highlightcolor=EDGE)
+        self.ent.pack(side="left", fill="x", expand=True, ipady=5)
         self.btn = tk.Button(row, text="发送", bg=BTN, fg=BTN_TXT, activebackground=BTN, relief="flat", bd=0,
-                             font=(FONT[0], 10), padx=12, pady=3, command=self.send, cursor="hand2")
+                             font=(FONT[0], BODY_FONT), padx=12, pady=3, command=self.send, cursor="hand2")
         self.btn.pack(side="left", padx=(8, 0))
-        tk.Label(card, text="回车发送 · Esc 关闭", bg=BG, fg=MUTED, font=(FONT[0], 8)).pack(anchor="w", pady=(6, 0))
+        tk.Label(card, text="回车发送 · Esc 关闭", bg=BG, fg=MUTED,
+                 font=(FONT[0], BODY_FONT - 3)).pack(anchor="w", pady=(6, 0))
 
         self.ent.bind("<Return>", lambda _e: self.send()); self.win.bind("<Escape>", lambda _e: self.close())
         self.set_history(history or [])

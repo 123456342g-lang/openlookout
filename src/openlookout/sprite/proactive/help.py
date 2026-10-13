@@ -181,6 +181,9 @@ def record(row: dict) -> None:
 
 
 def publish(offer: dict) -> None:
+    # 风险分级批次会在 perceive/ 还不存在时首发提议（全新安装、隔离 SPRITE_HOME）。
+    # 少了这行 mkdir，第一个提议就会 FileNotFoundError 把整轮提议冲掉。
+    OFFER.parent.mkdir(parents=True, exist_ok=True)
     tmp = OFFER.with_suffix(".tmp"); tmp.write_text(json.dumps(offer, ensure_ascii=False), encoding="utf-8")
     os.replace(tmp, OFFER)
 
