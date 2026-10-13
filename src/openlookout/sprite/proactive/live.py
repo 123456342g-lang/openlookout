@@ -416,7 +416,9 @@ def reconcile_exits(procs: dict, fails: dict, *, start=start, log=log,
 
     慢速探活（P1-2）：被摘孩子每 ``RESPAWN_PROBE_S`` 秒试拉一次；探活 proc
     活过观察窗才回到正常轮询并记恢复日志，探活失败静默等下一轮。brain/gui/
-    recorder 三者行为完全一致。
+    recorder 三者行为完全一致。秒退达上限的那次 start 若已返回 proc，该 proc
+    直接作为在飞探活 proc 被 dropped 接管（R2-1），而不是随 retire 的 pop 被
+    遗弃成孤儿：故障恰在边界恢复时，它 10s 内就能被确认复活而无需再等 60s。
     其它（非 OSError）异常不在此吞——交给监督轮外层的 try/except，免得掩盖
     编程错误。``fails`` 原地更新并返回，``procs``/``spawned``/``dropped`` 原地改。
     """
@@ -426,14 +428,22 @@ def reconcile_exits(procs: dict, fails: dict, *, start=start, log=log,
     if dropped is None:
         dropped = {}
 
-    def retire(name: str, reason: str) -> None:
+    def retire(name: str, reason: str, *, inflight=None) -> None:
         log(f"{name} 连续 {fails.get(name, 0)} 次{reason}，暂时放弃快速重试，"
             f"转入慢速探活（每 {RESPAWN_PROBE_S:.0f}s 试拉一次，"
             f"活过 {SPAWN_OBSERVE_S:.0f}s 才恢复），其余部分继续")
         procs.pop(name, None)
         spawned.pop(name, None)
-        dropped[name] = {"retry_at": now + RESPAWN_PROBE_S,
-                         "proc": None, "spawned": None}
+        if inflight is None:
+            dropped[name] = {"retry_at": now + RESPAWN_PROBE_S,
+                             "proc": None, "spawned": None}
+        else:
+            # R2-1：本次秒退判定刚拉起的 proc 不许遗弃（先挂 procs 再 pop 会让它
+            # 既不在 procs 也不在 dropped、从未 terminate，60s 后探活再拉即双开）。
+            # 直接挂为在飞探活 proc：活过观察窗就由上面的探活逻辑确认复活，
+            # 再次秒退则回等待继续探活——它始终处于「被跟踪或被 terminate」二态。
+            dropped[name] = {"retry_at": now + RESPAWN_PROBE_S,
+                             "proc": inflight, "spawned": now}
 
     # 1) 慢速探活：先于正常轮询处理，恢复成功的孩子本轮就交给下面的正常路径接管。
     for name in list(dropped):
@@ -495,7 +505,8 @@ def reconcile_exits(procs: dict, fails: dict, *, start=start, log=log,
             # 不能因为 start 没抛异常就把计数清零。
             fails[name] = fails.get(name, 0) + 1
             if fails[name] >= max_fails:
-                retire(name, "启动后秒退")
+                # new 交给 retire 挂为在飞探活 proc，不能让它随 pop 变成孤儿。
+                retire(name, "启动后秒退", inflight=new)
             else:
                 log(f"{name} 启动后 {SPAWN_OBSERVE_S:.0f}s 内退出"
                     f"（连续第 {fails[name]} 次，疑似启动即崩），已再拉起")

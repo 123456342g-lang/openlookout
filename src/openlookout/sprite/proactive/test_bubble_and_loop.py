@@ -599,6 +599,142 @@ def test_dropped_child_keeps_waiting_silently_after_failed_probes():
     assert len([m for m in logs if "恢复" in m]) == 1
 
 
+# ---------------- R2-1：秒退第 30 次刚拉起的 proc 不许被 retire 遗弃 ----------------
+
+class _TrackedProc:
+    """带 terminate 计数、可切换存活的假 proc：用来核对「跟踪或被 terminate」二态。"""
+
+    def __init__(self, *, alive: bool):
+        self.alive = alive
+        self.terminated = 0
+
+    def poll(self):
+        return None if self.alive else 1
+
+    def terminate(self):
+        self.terminated += 1
+
+
+def _run_30_early_exit_ticks(start, *, t0=40_000.0):
+    """连跑 30 个 2s tick：旧 proc 每个 tick 都在观察窗内秒退。"""
+    procs = {"brain": _DeadProc(1)}
+    spawned_at = {"brain": t0}
+    fails: dict = {}
+    dropped: dict = {}
+    logs: list[str] = []
+    for i in range(live.MAX_START_FAILS):
+        live.reconcile_exits(procs, fails, start=start, log=logs.append,
+                             spawned=spawned_at, dropped=dropped, now=t0 + 2 * i)
+    t30 = t0 + 2 * (live.MAX_START_FAILS - 1)
+    return procs, spawned_at, fails, dropped, logs, t30
+
+
+def test_30th_early_exit_spawn_surviving_is_adopted_by_probe_and_revives():
+    """故障恰在第 30 次判定的 tick 边界恢复：第 30 次 start 返回的是活 proc。
+
+    旧代码先 ``procs[name]=new`` 再 ``retire()``（pop procs + dropped.proc=None），
+    new 既不在 procs 也不在 dropped、从未 terminate；60s 后探活再拉第二个，
+    恢复后两个活实例只有一个被跟踪（brain 双开=两个自主模型会话）。
+    新代码：new 挂为在飞探活 proc，活过观察窗即由探活逻辑复活，全程只有一个
+    活实例且它始终被跟踪——不存在第三态。
+    """
+    spawned_procs: list[_TrackedProc] = []
+
+    def start(name):
+        # 前 29 次秒退，第 30 次故障恢复、返回活 proc
+        proc = _TrackedProc(alive=(len(spawned_procs) == live.MAX_START_FAILS - 1))
+        spawned_procs.append(proc)
+        return proc
+
+    procs, spawned_at, fails, dropped, logs, t30 = _run_30_early_exit_ticks(start)
+    thirtieth = spawned_procs[-1]
+
+    assert fails["brain"] == live.MAX_START_FAILS
+    assert "brain" not in procs, "达上限仍要摘出快速轮询"
+    assert dropped["brain"]["proc"] is thirtieth, "刚拉起的活 proc 必须被 dropped 在飞槽位接管"
+    assert dropped["brain"]["spawned"] == t30
+    assert thirtieth.terminated == 0, "活着的 proc 不该被 terminate，它还要被探活观察"
+
+    kw = dict(start=start, log=logs.append, spawned=spawned_at, dropped=dropped)
+
+    # 观察窗内：不允许再 spawn（否则就是双开），也不能提前复活
+    live.reconcile_exits(procs, fails, now=t30 + 2, **kw)
+    assert len(spawned_procs) == live.MAX_START_FAILS
+    assert "brain" not in procs and dropped["brain"]["proc"] is thirtieth
+
+    # 活过观察窗：探活确认复活，回到正常轮询——不必再等 60s
+    live.reconcile_exits(procs, fails, now=t30 + live.SPAWN_OBSERVE_S + 1, **kw)
+    assert procs.get("brain") is thirtieth
+    assert "brain" not in dropped
+    assert fails["brain"] == 0
+    assert any("恢复" in m for m in logs)
+
+    # 恢复后长期运行：同一实例、零额外 spawn、零 terminate
+    live.reconcile_exits(procs, fails, now=t30 + 600, **kw)
+    assert len(spawned_procs) == live.MAX_START_FAILS
+    alive_procs = [p for p in spawned_procs if p.alive]
+    assert len(alive_procs) == 1 and alive_procs[0] is thirtieth
+    tracked = list(procs.values()) + [e["proc"] for e in dropped.values()
+                                      if e.get("proc") is not None]
+    assert thirtieth in tracked and thirtieth.terminated == 0, "不存在孤儿"
+
+
+def test_30th_early_exit_spawn_that_dies_too_keeps_silent_probe_cycle():
+    """第 30 次 start 返回的 proc 也秒退：它作为在飞探活 proc 留观，下一 tick
+    被判定探活失败后回等待、继续 60s 探活周期（静默不刷日志），直到磁盘恢复、
+    某次探活活过观察窗才复活。"""
+    spawned_procs: list[_TrackedProc] = []
+    mode = {"kind": "dead"}
+    stable = _TrackedProc(alive=True)
+
+    def start(name):
+        proc = stable if mode["kind"] == "ok" else _TrackedProc(alive=False)
+        spawned_procs.append(proc)
+        return proc
+
+    procs, spawned_at, fails, dropped, logs, t30 = _run_30_early_exit_ticks(start)
+    thirtieth = spawned_procs[-1]
+    assert dropped["brain"]["proc"] is thirtieth, "即使也秒退，new 也要先挂在飞槽位而不是丢弃"
+    assert dropped["brain"]["spawned"] == t30
+    assert len([m for m in logs if "放弃" in m]) == 1
+    n_logs_at_retire = len(logs)
+
+    kw = dict(start=start, log=logs.append, spawned=spawned_at, dropped=dropped)
+
+    # 下一 tick：在飞探活秒退（age=2 < 观察窗）→ 回等待，静默、无新 spawn
+    live.reconcile_exits(procs, fails, now=t30 + 2, **kw)
+    assert procs == {}
+    assert dropped["brain"]["proc"] is None
+    assert dropped["brain"]["spawned"] is None
+    assert dropped["brain"]["retry_at"] == t30 + 2 + live.RESPAWN_PROBE_S
+    assert len(spawned_procs) == live.MAX_START_FAILS
+    assert len(logs) == n_logs_at_retire, "退休之后的探活失败必须零日志"
+
+    # 未到探活时刻：不重试
+    live.reconcile_exits(procs, fails, now=t30 + 2 + live.RESPAWN_PROBE_S - 1, **kw)
+    assert len(spawned_procs) == live.MAX_START_FAILS
+
+    # 到点再探一次，仍秒退 → 继续等待一个周期，依然静默
+    probe_t = t30 + 2 + live.RESPAWN_PROBE_S
+    live.reconcile_exits(procs, fails, now=probe_t, **kw)
+    assert dropped["brain"]["proc"] is spawned_procs[-1]
+    live.reconcile_exits(procs, fails, now=probe_t + 2, **kw)
+    assert dropped["brain"]["proc"] is None
+    assert dropped["brain"]["retry_at"] == probe_t + 2 + live.RESPAWN_PROBE_S
+    assert len(logs) == n_logs_at_retire
+
+    # 磁盘恢复：探活活过观察窗后复活，无孤儿
+    mode["kind"] = "ok"
+    revive_t = probe_t + 2 + live.RESPAWN_PROBE_S
+    live.reconcile_exits(procs, fails, now=revive_t, **kw)
+    assert dropped["brain"]["proc"] is stable and procs == {}
+    live.reconcile_exits(procs, fails, now=revive_t + live.SPAWN_OBSERVE_S + 1, **kw)
+    assert procs.get("brain") is stable and "brain" not in dropped
+    assert fails["brain"] == 0
+    assert stable.terminated == 0
+    assert len([p for p in spawned_procs if p.alive]) == 1
+
+
 # ---------------- P2-3：监督日志写盘恢复可见 ----------------
 
 def test_log_reports_recovery_and_resets_counter(monkeypatch):

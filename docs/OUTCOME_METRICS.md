@@ -82,7 +82,10 @@ UNKNOWN   = 其余任何字符串                                      # 全部�
 
 **两类旁证（不并入开口级分母）**：
 
-1. `疑似气泡超时`：`latency_s ≥ SILENCE_HINT_S = 170`（companion 气泡上限 180s）。
+1. `疑似气泡超时`：不再用统一常量，而是按本行气泡预算判定
+   （`latency_s + 5s 容差 ≥ bubble_budget_s`）——offer 行预算 120s
+   （`OFFER_ASK_S=60`，gui 展示 ×2），companion 行按文案长度 30~90s
+   （30s 阅读基线 + 0.1s/字，上限 90s）。
    这类 `ignored` 说明用户根本来不及回应——它们里可能包含真实帮上忙的汇报。
 2. `疑似漏记的 responded`：结果落库后 `LATE_USER_WINDOW_S = 900` 秒内用户打字，
    但结果记成了沉默 → 明显是漏记，不是用户没反应。
