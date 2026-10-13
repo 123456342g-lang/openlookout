@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import os
 import threading
 import traceback
 from dataclasses import dataclass, field, replace
@@ -39,34 +38,6 @@ class Status(StrEnum):
 
 class BudgetExhausted(RuntimeError):
     """A normal stopping condition, not a failed backend call."""
-
-
-#: Per-turn cap on evidence-gathering ("investigation") tools, overridable with
-#: ``OPENLOOKOUT_TOOL_BUDGET``.  Prompt text already asked for a budget and the
-#: model kept reading anyway -- one turn spent 23 forensic calls before saying
-#: anything -- so the cap has to be enforced where the call is dispatched.
-DEFAULT_INVESTIGATION_BUDGET = 6
-
-#: Returned instead of running the tool once the budget is spent.  It reads as
-#: guidance rather than a failure so the model can simply speak or stay quiet,
-#: which is the behaviour the budget exists to produce.
-INVESTIGATION_BUDGET_SPENT = (
-    "取证预算已用完：本轮用于取证的工具调用次数已达上限，不再执行新的取证。"
-    "不要再读文件或翻记录。请用已经拿到的信息开口——有话就用 companion 说，"
-    "没把握就用 companion 的 quiet 安静收尾。"
-)
-
-
-def investigation_budget() -> int:
-    """Resolve the per-turn forensic call cap, ignoring unusable overrides."""
-    raw = os.environ.get("OPENLOOKOUT_TOOL_BUDGET")
-    if raw is None or not raw.strip():
-        return DEFAULT_INVESTIGATION_BUDGET
-    try:
-        value = int(raw)
-    except ValueError:
-        return DEFAULT_INVESTIGATION_BUDGET
-    return value if value > 0 else DEFAULT_INVESTIGATION_BUDGET
 
 
 @dataclass(frozen=True)
@@ -174,9 +145,6 @@ class TaskRuntime:
             )
         self._usage: dict[str, int] = {}
         self._seen_calls: set[str] = set()
-        # One pool shared by every investigation tool, so switching from
-        # desktop_read_local to basic_search cannot buy a fresh allowance.
-        self._investigation_calls: int = 0
         self._pending: str | None = None
         self._lock = threading.RLock()
         self._status = Status.RUNNING
@@ -349,9 +317,6 @@ class TaskRuntime:
             if not self._charge({"backend_segments": 1}):
                 raise BudgetExhausted("Backend segment budget exhausted")
             self._boundary = None
-            # The forensic budget is per turn, never cumulative: a fresh turn is
-            # a fresh chance to investigate.
-            self._investigation_calls = 0
             self._phase = task_input.phase
             self._context_key = task_input.context_key
             self._context_images[self._context_key] = self._context_images.get(
@@ -423,21 +388,6 @@ class TaskRuntime:
                     arguments = None
             if not valid and not binding.spec.dispatch_invalid:
                 return self._rejected(call_id, tool, "Invalid tool arguments.")
-            # Counted here rather than at the adapter, so both transports are
-            # capped: the host-native channel reaches this method through
-            # mcp_host -> dispatcher -> delegate, and the direct channel calls it
-            # directly.  A rejected call never reaches here, so only genuinely
-            # dispatched evidence gathering is charged.
-            if binding.spec.investigation:
-                budget = investigation_budget()
-                if self._investigation_calls >= budget:
-                    self.artifacts.record(
-                        "investigation_budget_spent",
-                        {"call_id": call_id, "tool": tool,
-                         "spent": self._investigation_calls, "budget": budget},
-                    )
-                    return ToolExecution(INVESTIGATION_BUDGET_SPENT, True)
-                self._investigation_calls += 1
             if not self._charge(dict(binding.spec.costs)):
                 return self._stopped_execution("The task budget is exhausted.")
             self.artifacts.record(

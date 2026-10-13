@@ -1321,9 +1321,9 @@ desktop_tidy = tidy
 
 
 def _spec(name: str, desc: str, props: dict, required: list[str], capability: Capability, effect: Effect,
-          *, max_images: int = 0, investigation: bool = False) -> ToolSpec:
+          *, max_images: int = 0) -> ToolSpec:
     return ToolSpec(name, desc, {"type": "object", "additionalProperties": False, "required": required, "properties": props},
-                    capability, effect, max_images=max_images, investigation=investigation)
+                    capability, effect, max_images=max_images)
 
 
 PID = {"type": "integer", "minimum": 1}
@@ -1408,13 +1408,11 @@ SPECS = {
          "order": {"enum": ["asc", "desc"]},
          "activity_before": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
          "snapshot": {"type": "string"}, "offset": {"type": "integer", "minimum": 0},
-         "limit": {"type": "integer", "minimum": 1, "maximum": 30}}, [], Capability.INSPECTION, Effect.NONE,
-        investigation=True)),
+         "limit": {"type": "integer", "minimum": 1, "maximum": 30}}, [], Capability.INSPECTION, Effect.NONE)),
     "desktop_read_local": (historyfacts.read_local, _spec(
         "desktop_read_local", "只读历史线索指向的本地目录或资料正文（txt/md/csv/html/docx/pdf）。目录一页最多30条；正文 limit 为字符数，offset 为字符偏移，PDF offset 为从0开始的页码。依据 next_offset 继续，不递归扫全盘。不支持格式或无文字需保留缺口，不能冒称已读要求。",
         {"path": {"type": "string"}, "offset": {"type": "integer", "minimum": 0},
-         "limit": {"type": "integer", "minimum": 1, "maximum": 10000}}, ["path"], Capability.INSPECTION, Effect.NONE,
-        investigation=True)),
+         "limit": {"type": "integer", "minimum": 1, "maximum": 10000}}, ["path"], Capability.INSPECTION, Effect.NONE)),
     "desktop_processes": (list_processes, _spec("desktop_processes", "查看占内存最多的进程、可用内存和 C 盘剩余空间（只读）。",
                           {"top": {"type": "integer", "minimum": 1, "maximum": 50}}, [], Capability.INSPECTION, Effect.NONE)),
     "desktop_inventory": (desktop_inventory, _spec("desktop_inventory", "只读盘点桌面文件名、类型、大小和最近修改时间。信息不足时先用它核实，再决定是否值得整理；不会改动文件。",
@@ -1496,8 +1494,7 @@ SPECS["desktop_browser_observe"] = (
     desktop_browser_observe,
     _spec("desktop_browser_observe",
           "只读观察一个已盘点标签页的可访问结构和文字，核对它是否与工作线索有关。必须先提供 inventory 返回的 tab_id；不会导航、填写、点击或提交。",
-          {"tab_id": {"type": "integer", "minimum": 1}}, ["tab_id"], Capability.INSPECTION, Effect.NONE,
-          investigation=True),
+          {"tab_id": {"type": "integer", "minimum": 1}}, ["tab_id"], Capability.INSPECTION, Effect.NONE),
 )
 
 # Keyless everyday services.  These are inspections, so they do not consume
@@ -1529,8 +1526,7 @@ SPECS["basic_search"] = (
            {"query": {"type": "string", "minLength": 1, "maxLength": 120},
             "root": {"type": "string", "maxLength": 260},
             "mode": {"enum": ["name", "text", "both"]},
-            "max_results": {"type": "integer", "minimum": 1, "maximum": 50}}, ["query"], Capability.INSPECTION, Effect.NONE,
-           investigation=True),
+            "max_results": {"type": "integer", "minimum": 1, "maximum": 50}}, ["query"], Capability.INSPECTION, Effect.NONE),
 )
 SPECS["basic_web_search"] = (
     basic_web_search,
