@@ -16,10 +16,11 @@ def main(argv=None) -> None:
     ap = argparse.ArgumentParser(
         epilog=(
             "安全默认（issue #13 PR1）：宿主机模式只放行已注册的 desktop_* MCP 工具"
-            "（经风险门与撤销台账），Claude 原生 Edit/Write/MultiEdit/Bash 默认全禁，"
-            "且不使用 bypassPermissions。仅本地开发可显式设置环境变量 "
-            "OPENLOOKOUT_CLAUDE_BUILTIN_TOOLS 透传原生工具；无人值守环境放开等于"
-            "允许模型直接改文件/跑命令，生产（含普通 run_offer）禁止设置。"
+            "（经风险门与撤销台账），Claude 原生 Edit/Write/MultiEdit/Bash 全禁，"
+            "且不使用 bypassPermissions。本入口（含普通 run_offer 无人值守任务）"
+            "不接受任何原生工具开关：即使设置了环境变量 "
+            "OPENLOOKOUT_CLAUDE_BUILTIN_TOOLS 也会被忽略；该变量只对常驻 brain 的"
+            "本地开发运行生效。"
         )
     )
     ap.add_argument("--objective", required=True)

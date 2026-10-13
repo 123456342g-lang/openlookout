@@ -423,6 +423,22 @@ def test_cli_source_wires_the_allowlist():
     assert "create_backend" in source
 
 
+def test_cli_help_epilog_documents_that_native_env_is_ignored(capsys):
+    """复审非阻塞 P2：无人值守入口 --help 必须如实写明该 env 在此入口被忽略。"""
+    from vista.benchmarks.desktop.cli import main
+
+    # --help 在 parse_args 阶段 SystemExit(0)，早于 provider 加载，不会联网。
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--help"])
+    assert exc_info.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "OPENLOOKOUT_CLAUDE_BUILTIN_TOOLS" in help_text
+    assert "也会被忽略" in help_text
+    # 不得再保留旧的误导措辞（「可设置以透传原生工具」）。
+    assert "仅本地开发可显式设置环境变量" not in help_text
+    assert "禁止设置" not in help_text
+
+
 # ── review P1-2：MCP 服务端成员校验（tools/call 不只靠客户端自律）──────────────
 
 
