@@ -86,6 +86,12 @@ def history(limit: int = 80) -> list[dict]:
             continue
         if result == "shown":
             label = text
+        elif result == "started":
+            # 同意门之后：这是用户点了「好的」之后才出现的状态。
+            label = f"我开始处理：{text}"
+        elif result == "expired":
+            # 没等到答复就到期作废 —— 没动手，如实说没动手。
+            label = f"这条提议你没来得及回应，我先作废了，没有动手：{text}"
         elif result == "auto_started":
             label = f"我开始处理：{text}"
         elif result == "auto_completed":

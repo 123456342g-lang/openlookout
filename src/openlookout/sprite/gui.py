@@ -244,10 +244,16 @@ class SpriteWindow:
         kind, v = act
         if kind == "detail":
             self.msg = dict(self.msg, text=self.msg["detail"], detail=None); self.redraw(); return
+        before = self.msg
         if kind == "choice": self.on_choice(v)
         elif kind == "undo": self.on_undo(v)
         else: self.on_choice(None, ok=True)
-        self.hide(expired=False)
+        # The callback may already have replaced the bubble: accepting an offer
+        # answers it and immediately shows "好，我开始处理…". Hiding
+        # unconditionally would erase that follow-up, so only close the bubble
+        # the click actually belonged to.
+        if self.msg is before:
+            self.hide(expired=False)
 
     # 拖动
     def _press(self, e):

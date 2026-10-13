@@ -2,7 +2,8 @@
 读最近几分钟的活动记录 + 当前截图，问模型：现在有没有一件我能主动帮上的事？
 - 没有、或把握不够（confidence < MIN_CONF）：沉默。
 - 有：写 perceive/offer.json，窗口气泡显示一句正在处理的说明。
-- offer 只用于安全、可撤回的主动帮助；窗口进程会自动启动执行，并在完成后报告结果。
+- offer 只用于安全、可撤回的主动帮助；offer 必须先问「好的/不用」，用户点头才动手
+  （见 live.py 的同意门），完成后报告结果；用户不响应则到期作废，不执行。
 - 节流：两次提议至少间隔 OFFER_COOLDOWN_S；你点“不用”后，同一件事在 DISMISS_S 内不再提。
 python -m sprite.proactive.help [--once]
 """
@@ -23,6 +24,14 @@ MIN_CONF = 0.7
 OFFER_COOLDOWN_S = 300
 COMPANION_COOLDOWN_S = 600
 DISMISS_S = 1800
+
+# 每一条 kind=offer 都带这两个选项：offer 是**要动手改电脑**的提议，
+# 必须用户点头才执行（见 live.consent_gate）。把选项写进 offer 记录本身，
+# 而不是只在气泡上临时画出来——这样 offers.jsonl 才留得下「摆过什么选项」的证据，
+# outcome_report.bucket_of 的 offer_with_options 归档、以及以后的正负样本统计才有依据。
+# 刻意写死在这里而不是让模型生成：选项是安全契约的一部分，不能由模型临场改口径；
+# 模型只负责「要不要开口、说哪句话」（COMPANION_SPEC）。
+OFFER_OPTIONS = ["好的", "不用"]
 RECENT_N = 12
 CALL_TIMEOUT_S = 120
 
@@ -35,7 +44,8 @@ PROMPT = (
     "只输出一个 JSON，不要别的：\n"
     '{{"kind": "companion" 或 "offer" 或 "none", "say": "你要对他说的一句话", '
     '"confidence": 0到1的小数, "topic": "事情的简短标签，6字内"}}\n'
-    "kind 含义：companion=只是陪伴式的一句关心；offer=你判断应该立刻替他处理的事项，系统会自动动手并报告结果；none=此刻不必开口。"
+    "kind 含义：companion=只是陪伴式的一句关心；offer=一件需要动手改电脑的具体提议，"
+    "会先问「好的/不用」，用户点了好的才会执行，他不理就自动作废；none=此刻不必开口。"
     "拿不准就 none，宁可安静。"
 )
 
@@ -106,11 +116,14 @@ def recently_said(topic: str, kind: str, window_s: float | None = None) -> bool:
             continue
         # 已经回应过（好的/不用）：这件事有下文了。拒绝的只在 DISMISS_S 内有效，
         # 过了就该重新掂量；接受过的则长期有效——做完的事不用反复邀功。
+        # （同意门之后 accepted/rejected 由 live.on_choice 写进 outcomes.jsonl，
+        #  这里读的是 offers.jsonl 的执行侧状态：started 才代表真动手了。）
         if r.get("result") == "dismissed" and now - r.get("t", 0) < DISMISS_S:
             return True
-        if r.get("result") in {"accepted", "auto_started", "auto_completed", "undone"}:
+        if r.get("result") in {"accepted", "started", "auto_started", "auto_completed", "undone"}:
             return True
-        # 说过但没回应：按各自窗口算
+        # 说过但没回应：按各自窗口算。带选项的 offer 已经问过了还没答复，
+        # 不该在冷却窗口内再弹一次同样的问题。
         if r.get("result") == "shown" and now - r.get("t", 0) < win:
             return True
     return False
@@ -185,7 +198,8 @@ def check_once(last_offer_t: float) -> float:
     gap = OFFER_COOLDOWN_S if kind == "offer" else COMPANION_COOLDOWN_S
     if time.time() - last_offer_t < gap: return last_offer_t
     offer = dict(id=f"{time.time_ns()}", t=time.time(), text=say, topic=topic, kind=kind,
-                 confidence=float(d.get("confidence", 0)))
+                 confidence=float(d.get("confidence", 0)),
+                 **({"options": list(OFFER_OPTIONS)} if kind == "offer" else {}))
     publish(offer); record(dict(offer, result="shown"))
     print(f"[{kind}] {say}", flush=True)
     return time.time()

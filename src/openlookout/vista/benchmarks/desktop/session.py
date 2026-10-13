@@ -179,7 +179,8 @@ class DesktopSession:
         with (CURRENT.parent / "decisions.jsonl").open("a", encoding="utf-8") as log:
             log.write(json.dumps(dict(d, actions=mutations), ensure_ascii=False) + "\n")
         if kind in ("companion", "offer") and say and (kind == "companion" or float(d.get("confidence", 0.8)) >= 0.7):
-            from sprite.proactive.help import publish, record, worth_saying, conversation_worth_saying
+            from sprite.proactive.help import (OFFER_OPTIONS, conversation_worth_saying,
+                                               publish, record, worth_saying)
             allowed = conversation_worth_saying(say) if kind == "companion" else worth_saying(topic, kind, say)
             if not allowed:
                 self.suppressed += 1
@@ -187,6 +188,10 @@ class DesktopSession:
                                  boundary="decision_complete", event_text="decision:suppressed")
             offer = dict(id=f"{time.time_ns()}", t=d["t"], text=say, topic=topic,
                          kind=kind, action="none", confidence=float(d.get("confidence", 0.8)))
+            # offer 要动手改电脑，所以必须先问过。选项写进 offer 记录本身（不只是画在气泡上），
+            # 这样 offers.jsonl 才留得住「摆过什么选项」，正负样本才统计得出来。
+            if kind == "offer":
+                offer["options"] = list(OFFER_OPTIONS)
             if d.get("reply_to"):
                 offer["reply_to"] = d["reply_to"]
             publish(offer); record(dict(offer, result="shown"))
