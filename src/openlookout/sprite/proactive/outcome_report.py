@@ -11,8 +11,8 @@
     无证据     ignored / unanswered   —— 气泡超时消失，用户全程没反应
 
 **沉默不是拒绝。** 把 ``ignored`` 算进分母得到的「接受率」一定是假的：
-已知实测里就有开口其实帮上了忙、却因为气泡 180s 超时被记成 ``ignored``
-（例如「清了 Temp：C 盘 1.96G→3.04G」）。所以本报告：
+已知实测里就有开口其实帮上了忙、却因为旧口径气泡写死 180s 超时被记成
+``ignored``（例如「清了 Temp：C 盘 1.96G→3.04G」）。所以本报告：
 
 1. 按 kind 分列（companion / 带选项的 offer / 其他），给出每个 kind 的样本量；
 2. 把三类标签分开计数；任何「接受率/有效率」都写清分母，并显式标注
@@ -80,7 +80,18 @@ CLASS_ZH = {
 MIN_EVIDENCE = 20
 MIN_PER_DAY = 5        # 单日结果少于此数 → 不画趋势
 MIN_DAYS = 2           # 少于两天 → 不画趋势
-SILENCE_HINT_S = 170.0  # companion 气泡上限 180s；latency 贴近它 → 疑似超时静默
+# 「疑似气泡超时」判据（PR #16 复审 P1-3 修正）。
+# 沉默行是 GUI on_expire 在气泡到点被收走时落账的，旧判据 SILENCE_HINT_S=170
+# 绑的是「companion 气泡上限 180s」；PR #16 后 companion 按句长给 30~90s、
+# 带选项 offer 为 OFFER_ASK_S×2=120s，旧阈值对新数据再也不会命中，报告还会
+# 打印已不成立的「180s 来不及回应」。新判据按**每一行自己的 kind/文本**推导
+# 它本该活多久（bubble_budget_s）：latency 达到本行预算 = 到点被收走的沉默。
+# on_expire 经 Tk 调度/重启重放落账可能略晚于预定寿命，给这点容差。
+EXPIRY_TOLERANCE_S = 5.0
+# live 不可用时的同值兜底（与 live.BUBBLE_READ_S/PER_CHAR/MAX_S、OFFER_ASK_S×2
+# 同步——改 live 时长时记得改这里；正常路径直接取 live 常量，不靠这组值）。
+_FALLBACK_COMPANION_BUDGET = (30.0, 0.1, 90.0)
+_FALLBACK_OFFER_BUDGET_S = 120.0
 LATE_USER_WINDOW_S = 900.0  # 结果落库后这么久内用户打字 → 疑似漏记的「responded」
 
 # ── ② 离线四指标（issue #15）：阈值集中在此，全部只读、只描述，不做任何拦截 ──────
@@ -95,6 +106,35 @@ FIELD_OFFER_T = "offer_t"           # 原开口时刻（①）
 FIELD_ANCHOR = "anchor"             # {app,type,title} 锚点（①）
 FIELD_TURN_TRIGGER = "turn_trigger" # timing|heartbeat|screen|feedback|reply|maintenance（①）
 FIELD_REPLY_TO = "reply_to"         # 非空 = 对话簇，主动度量要排除（①）
+
+def bubble_budget_s(row: Mapping[str, Any]) -> float:
+    """这条开口按 PR #16 新口径本该有的气泡寿命（秒），判据只依赖行自身的
+    kind/text：
+
+    * kind=offer：带选项气泡 OFFER_ASK_S×2（实挂 120s）；
+    * 其余（companion/缺失/历史行）：``live.bubble_seconds(text)``，30~90s。
+
+    阈值直接从 live 推导，避免两处常量再次漂移；live 导入失败（例如并行开发中
+    文件有语法错误）时用与 live 同值的兜底常量。
+    """
+    kind = str(row.get("kind") or "").strip().lower()
+    text = row.get("text")
+    try:
+        from . import live
+    except Exception:
+        live = None
+    if live is not None:
+        try:
+            if kind == "offer":
+                return float(live.OFFER_ASK_S) * 2.0
+            return float(live.bubble_seconds(text if text is not None else ""))
+        except Exception:
+            pass
+    read_s, per_char_s, max_s = _FALLBACK_COMPANION_BUDGET
+    if kind == "offer":
+        return _FALLBACK_OFFER_BUDGET_S
+    return max(read_s, min(max_s, read_s + len(str(text or "")) * per_char_s))
+
 
 FILE_NAMES = ("outcomes.jsonl", "offers.jsonl", "feedback.jsonl", "conversation.jsonl")
 
@@ -1000,7 +1040,8 @@ def summarize(perceive_dir: Path, *, app: str = "default",
     }
 
     # 8) 沉默样本明细：把每一条无证据开口连文本一起列出来，
-    #    并标出 latency 贴近 180s 气泡上限（疑似超时静默，而非真的没人要）。
+    #    并标出 latency 是否达到这一行**按它自己 kind/文本算出的气泡寿命**
+    #    （companion 30~90s、offer 120s）：到点被收走的沉默 ≠ 用户拒绝。
     details = []
     for row in outcomes:
         if classify(row.get("outcome")) != "silence":
@@ -1011,6 +1052,7 @@ def summarize(perceive_dir: Path, *, app: str = "default",
             latency_f = float(latency) if latency is not None else None
         except (TypeError, ValueError):
             latency_f = None
+        budget = bubble_budget_s(row)
         details.append({
             "id": str(row.get("id") or ""),
             "t": ts,
@@ -1018,7 +1060,9 @@ def summarize(perceive_dir: Path, *, app: str = "default",
             "kind": str(row.get("kind") or ""),
             "outcome": str(row.get("outcome") or ""),
             "latency_s": latency_f,
-            "suspected_timeout": bool(latency_f is not None and latency_f >= SILENCE_HINT_S),
+            "bubble_budget_s": budget,
+            "suspected_timeout": bool(latency_f is not None
+                                      and latency_f + EXPIRY_TOLERANCE_S >= budget),
             "text": str(row.get("text") or "")[:200],
         })
     details.sort(key=lambda r: (r["t"] is None, r["t"]))
@@ -1345,17 +1389,20 @@ def render_markdown(report: Mapping[str, Any]) -> str:
     if not report["silence_details"]:
         lines.append("没有沉默样本。")
     else:
-        lines.append("| # | 时间 | kind | latency_s | 疑似气泡超时 | 文本 |")
-        lines.append("|---|---|---|---|---|---|")
+        lines.append("| # | 时间 | kind | latency_s | 该行气泡寿命 | 疑似气泡超时 | 文本 |")
+        lines.append("|---|---|---|---|---|---|---|")
         for i, item in enumerate(report["silence_details"], 1):
             lat = "—" if item["latency_s"] is None else f"{item['latency_s']:.1f}"
-            lines.append(f"| {i} | {item['day']} | {item['kind']} | {lat} "
+            budget = f"{item['bubble_budget_s']:.0f}"
+            lines.append(f"| {i} | {item['day']} | {item['kind']} | {lat} | {budget} "
                          f"| {'是' if item['suspected_timeout'] else '否'} "
                          f"| {_cell(item['text'], 90)} |")
         lines.append("")
-        lines.append("> 「疑似气泡超时」= latency ≥ "
-                     f"{SILENCE_HINT_S:.0f}s（companion 气泡上限 180s），"
-                     "说明用户根本来不及回应就被记成了 ignored。"
+        lines.append("> 「疑似气泡超时」= latency 达到这一行按 PR #16 新口径本该有的"
+                     "气泡寿命（companion 按句长 30~90s、带选项 offer 120s，"
+                     f"落账容差 {EXPIRY_TOLERANCE_S:.0f}s）：沉默是气泡到点被收走造成的，"
+                     "不是用户拒绝。PR #16 之前的历史行 companion 气泡写死 180s，"
+                     "按本判据同样会被标为超时——因为它们本来就是。"
                      "这类行里**已经**包含真实帮上忙的汇报——"
                      "「核完 DEVELOPMENT-PLAN 事实2…」与"
                      "「清了 Temp 里超过24小时的文件：C盘从 1.96G 回到 3.04G」"
