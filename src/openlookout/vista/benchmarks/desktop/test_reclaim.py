@@ -36,6 +36,8 @@ def world(tmp_path, monkeypatch):
               user_dirs=[docs], downloads=dl, provenance=lambda p: None, big_mb=10)
     monkeypatch.setattr(actions, "HOME", home)
     monkeypatch.setattr(actions, "JOURNAL", sandbox / "undo.jsonl")
+    # 默认绝不扫真实回收站：以下用例只验证缓存/temp 逻辑；回收站用例显式注入假目录。
+    monkeypatch.setattr(actions, "_recycle_roots", lambda: [])
     return dict(home=home, env=env, temp=temp, cache=cache, pkg=pkg, docs=docs, dl=dl)
 
 
@@ -50,7 +52,7 @@ def _mk(p: Path, data: bytes = b"x" * 1024) -> Path:
 def test_reclaims_regenerable_cache(world):
     _mk(world["cache"] / "f_0001", b"c" * 2048)
     out = reclaim({}, env=world["env"], disk=lambda: 100.0)
-    assert "已把 1 个可再生文件收进隔离区" in out.text
+    assert "1 个临时/缓存文件" in out.text and "0 项回收站内容" in out.text
     assert not (world["cache"] / "f_0001").exists()                       # 原文件已收走
     assert Quarantine(world["home"]).held()                               # 隔离区里确实收着
 
@@ -71,14 +73,14 @@ def test_nothing_safe_reports_hands_off(world):
 def test_noncritical_disk_respects_explicit_small_batch(world):
     for i in range(5): _mk(world["cache"] / f"f_{i:04d}", b"c" * 512)
     out = reclaim({"max_items": 2}, env=world["env"], disk=lambda: 100.0)
-    assert "已把 2 个" in out.text
+    assert "2 个临时/缓存文件" in out.text
     assert len(Quarantine(world["home"]).held()) == 2
 
 
 def test_critical_disk_exhausts_safe_candidates_without_model_batch_limit(world):
     for i in range(5): _mk(world["cache"] / f"critical_{i:04d}", b"c" * 512)
     out = reclaim({"max_items": 1}, env=world["env"], disk=lambda: 0.5)
-    assert "已把 5 个" in out.text
+    assert "5 个临时/缓存文件" in out.text
     assert len(Quarantine(world["home"]).held()) == 5
 
 
@@ -126,4 +128,68 @@ def test_reclaim_reports_freed_space(world):
         seen["n"] += 1
         return 99.0 if seen["n"] == 1 else 100.5                         # 清理后多出 1.5GB
     out = reclaim({}, env=world["env"], disk=disk)
-    assert "1.5GB" in out.text and "可还原" in out.text
+    assert "1.5GB" in out.text and "还原" in out.text
+
+
+# ── 回收站：$I/$R 成对收进隔离区，可还原回回收站原位置（issue #25）─────────
+
+def _fake_recycle(tmp_path: Path):
+    bin_dir = tmp_path / "$Recycle.Bin" / "S-1-5-21-fake"
+    bin_dir.mkdir(parents=True)
+    rfile = bin_dir / "$RABC123.txt"; rfile.write_bytes(b"deleted" * 100)
+    ifile = bin_dir / "$IABC123.txt"; ifile.write_bytes(b"\x00" * 64)
+    rdir = bin_dir / "$RDIR001"; rdir.mkdir()
+    (rdir / "inner.bin").write_bytes(b"d" * 200)
+    idir = bin_dir / "$IDIR001"; idir.write_bytes(b"\x00" * 64)
+    orphan = bin_dir / "$IORPHAN.txt"; orphan.write_bytes(b"\x00" * 32)  # 孤立索引：没有 $R
+    return bin_dir, rfile, ifile, rdir, idir, orphan
+
+
+def test_recycle_targets_pair_index_and_content(tmp_path):
+    bin_dir, rfile, _ifile, rdir, _idir, orphan = _fake_recycle(tmp_path)
+    targets = actions._recycle_targets(roots=[bin_dir])
+    rpaths = sorted(t[0].name for t in targets)
+    assert rpaths == ["$RABC123.txt", "$RDIR001"]                        # 孤立 $I 不算目标
+    file_target = next(t for t in targets if t[0] == rfile)
+    assert file_target[1].name == "$IABC123.txt" and file_target[2] is False
+    dir_target = next(t for t in targets if t[0] == rdir)
+    assert dir_target[1].name == "$IDIR001" and dir_target[2] is True
+
+
+def test_recycle_bin_items_are_quarantined_and_restored(world, tmp_path):
+    bin_dir, rfile, _ifile, rdir, _idir, _orphan = _fake_recycle(tmp_path)
+    data = rfile.read_bytes()
+    out = reclaim({"max_items": 50}, env=world["env"], disk=lambda: 100.0,
+                  recycle=lambda: actions._recycle_targets(roots=[bin_dir]))
+    assert "2 项回收站内容" in out.text
+    assert not rfile.exists() and not rdir.exists()                      # $R 主项都收走
+    held = Quarantine(world["home"]).held()
+    origs = [e["orig"] for e in held]
+    assert any(o.endswith("$RABC123.txt") for o in origs)
+    assert any("$RDIR001" in o for o in origs)
+    restore_quarantine()
+    assert rfile.exists() and rfile.read_bytes() == data                 # 原样还原回回收站
+    assert (rdir / "inner.bin").exists()
+
+
+def test_recycle_respects_batch_limit(world, tmp_path):
+    bin_dir = tmp_path / "$Recycle.Bin" / "S-1-5-21-fake"; bin_dir.mkdir(parents=True)
+    for code in ("AAA", "BBB", "CCC"):
+        (bin_dir / f"$R{code}.tmp").write_bytes(b"x" * 100)
+        (bin_dir / f"$I{code}.tmp").write_bytes(b"\x00" * 32)
+    out = reclaim({"max_items": 2}, env=world["env"], disk=lambda: 100.0,
+                  recycle=lambda: actions._recycle_targets(roots=[bin_dir]))
+    assert "2 项回收站内容" in out.text
+    r_held = [e for e in Quarantine(world["home"]).held()
+              if Path(e["orig"]).name.startswith("$R")]
+    assert len(r_held) == 2                                    # 只收 2 个 $R 主项
+    assert len(list(bin_dir.glob("$R*.tmp"))) == 1            # 第 3 个没动
+
+
+def test_recycle_target_vanished_before_action_is_skipped(world, tmp_path):
+    bin_dir = tmp_path / "$Recycle.Bin" / "S-1-5-21-fake"; bin_dir.mkdir(parents=True)
+    gone = bin_dir / "$RGONE.txt"                                        # 从未创建：模拟用户刚恢复
+    out = reclaim({}, env=world["env"], disk=lambda: 100.0,
+                  recycle=lambda: [(gone, None, False)])
+    assert Quarantine(world["home"]).held() == []                        # 一个字节没动
+    assert "1 个" in out.text and "没有动" in out.text

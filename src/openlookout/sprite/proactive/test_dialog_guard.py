@@ -138,3 +138,61 @@ def test_live_drop_dead_dialog_survives_destroyed_app(root):
     root.destroy()
     live.drop_dead_dialog(opened)
     assert opened["dlg"] is None
+
+
+# ── 错过提议的补点区（issue #26）────────────────────────────────────────
+
+PENDING_OFFER = {"id": "late-1", "text": "我想帮你做这件事：清一下回收站，要我开始吗？",
+                 "options": ["好的", "不用"]}
+
+
+def _all_children(w):
+    out = []
+    for c in w.winfo_children():
+        out.append(c)
+        out.extend(_all_children(c))
+    return out
+
+
+def _buttons(dlg, text):
+    return [w for w in _all_children(dlg.win)
+            if w.winfo_class() == "Button" and w.cget("text") == text]
+
+
+def test_pending_dialog_renders_nothing_without_pending(root):
+    dlg = _dialog(root)
+    assert _buttons(dlg, "好的") == [], "没有未决提议时不该出现补点按钮"
+
+
+def test_pending_card_yes_invokes_callback_and_removes_card(root):
+    calls = []
+    dlg = ChatDialog(root, 10, 10, "状态", lambda _t: "", [],
+                     pending=[PENDING_OFFER],
+                     on_decide=lambda offer, ok: calls.append((offer["id"], ok)))
+    yes = _buttons(dlg, "好的")
+    assert len(yes) == 1
+    card = yes[0].master.master                 # row -> card
+    yes[0].invoke()
+    assert calls == [("late-1", True)]
+    assert card.winfo_exists() == 0, "点完卡片应移除，不让同一件事重复批准"
+
+
+def test_pending_card_no_records_rejection(root):
+    calls = []
+    dlg = ChatDialog(root, 10, 10, "状态", lambda _t: "", [],
+                     pending=[PENDING_OFFER],
+                     on_decide=lambda offer, ok: calls.append((offer["id"], ok)))
+    _buttons(dlg, "不用")[0].invoke()
+    assert calls == [("late-1", False)]
+
+
+def test_pending_callback_error_keeps_card_and_does_not_raise(root):
+    def boom(_offer, _ok):
+        raise RuntimeError("账本满了")
+
+    dlg = ChatDialog(root, 10, 10, "状态", lambda _t: "", [],
+                     pending=[PENDING_OFFER], on_decide=boom)
+    yes = _buttons(dlg, "好的")[0]
+    card = yes.master.master
+    yes.invoke()                                 # 异常被吞进日志，不抛给 Tk
+    assert card.winfo_exists() == 1, "失败时卡片留着，下次打开还能再点"

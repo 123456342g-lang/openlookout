@@ -14,7 +14,7 @@
 
 配置在 ``SPRITE_HOME/permissions.json``，四种取值都真的生效：
 
-    {"low": "auto", "medium": "batch", "high": "each", "batch_window_s": 180}
+    {"low": "auto", "medium": "batch", "high": "each", "batch_window_s": 7200}
 
 闸门落在 `session.DesktopSession._handler` —— 所有 desktop_* 工具唯一的分发点。
 提议的呈现与点头仍然走 `help.publish` → GUI 气泡 → `live.on_choice` 那条已验证的链，
@@ -81,17 +81,22 @@ _EFFECT_DEFAULT: dict[Effect, RiskTier] = {
 #   desktop_write_deliverable 只往 deliverables 写裸文件名，后缀限 md/txt/csv，
 #                           ``xb`` 独占新建且不覆盖（已实测，见 test_risk_tier.py）。
 #                           产出目录、可撤回，但确实是往外送东西 → 中
-#   desktop_reclaim         一次收走过 4959 个文件 / 3.8GB（desktop_runs/20261011-073031）。
+#   desktop_reclaim         只把 risk 引擎判 safe+quarantine 的**可再生**项
+#                           （temp/浏览器与包缓存/回收站）移进隔离区，逐项二次
+#                           核对、先写撤回日志、restore_quarantine 可完整还原
+#                           （actions.py: reclaim）。10-14 实测它被钉在 HIGH 的
+#                           后果：C 盘只剩 0.5GB 还先弹问，用户点头后任务又因
+#                           别的链路失败没清成。可逆安全项问了比不问更糟 → 低
 #   desktop_tidy            一次最多搬动 200 个用户文件。
 #   desktop_suspend/_end_process  动用户正在用的进程。
 #   basic_shell             任意命令行，4000 字符。
-#                           ↑ 这五个是「强制一次闸门」，每次都问、绝不合并。
+#                           ↑ 这四个是「强制一次闸门」，每次都问、绝不合并。
 TOOL_TIER: dict[str, RiskTier] = {
     "desktop_undo": RiskTier.LOW,
     "desktop_trim": RiskTier.LOW,
     "desktop_capture_evidence": RiskTier.LOW,
     "desktop_write_deliverable": RiskTier.MEDIUM,
-    "desktop_reclaim": RiskTier.HIGH,
+    "desktop_reclaim": RiskTier.LOW,
     "desktop_tidy": RiskTier.HIGH,
     "desktop_suspend": RiskTier.HIGH,
     "desktop_end_process": RiskTier.HIGH,
@@ -103,8 +108,8 @@ TOOL_TIER: dict[str, RiskTier] = {
 _NEEDS_LIVE_VISUAL = frozenset({"desktop_capture_evidence"})
 
 _LABELS: dict[str, str] = {
-    "desktop_write_deliverable": "写交付物",
-    "desktop_reclaim": "清理可再生缓存",
+    "desktop_write_deliverable": "写文档",
+    "desktop_reclaim": "清理临时文件和缓存",
     "desktop_tidy": "整理桌面文件",
     "desktop_suspend": "挂起进程",
     "desktop_end_process": "结束进程",
@@ -122,7 +127,10 @@ class Policy:
     low: Mode = Mode.AUTO
     medium: Mode = Mode.BATCH
     high: Mode = Mode.ASK
-    batch_window_s: int = 180
+    # 默认 2 小时：气泡只在屏 120s，但用户可能正好没看屏幕——错过气泡不该
+    # 等于拒绝（10-14 实测：清理提议过期后只能看对话历史，没地方补点，C 盘
+    # 最后他自己清）。清单冻结不放大授权，执行前仍有现场核对（issue #26）。
+    batch_window_s: int = 7200
 
     def mode_for(self, tier: RiskTier) -> Mode:
         return {RiskTier.LOW: self.low, RiskTier.MEDIUM: self.medium, RiskTier.HIGH: self.high}[tier]
@@ -148,12 +156,12 @@ def load_policy(path: Path | None = None) -> Policy:
         return Policy()
     if not isinstance(raw, dict):
         return Policy()
-    window = raw.get("batch_window_s", 180)
+    window = raw.get("batch_window_s", 7200)
     return Policy(
         low=_mode(raw.get("low"), Mode.AUTO),
         medium=_mode(raw.get("medium"), Mode.BATCH),
         high=_mode(raw.get("high"), Mode.ASK),
-        batch_window_s=int(window) if isinstance(window, (int, float)) and window > 0 else 180,
+        batch_window_s=int(window) if isinstance(window, (int, float)) and window > 0 else 7200,
     )
 
 
@@ -250,10 +258,10 @@ class Gate:
         if mode.per_call:
             proposal = self._single(item)
             self._emit(proposal)
-            return Verdict(False, f"这是{tier.value}风险操作，已单独征求同意；你点头前不会执行。", item)
+            return Verdict(False, "这个动作需要他点头，已发成带「好的/不用」按钮的提议；他点头前不要执行，也不要再用对话追问一遍。", item)
         # BATCH：登记进本轮同档批次，等回合边界一次性征求同意。
         self.batches.setdefault(tier.value, Batch(tier)).add(item)
-        return Verdict(False, f"已登记到{tier.value}风险批次，等这一轮结束一起征求同意。", item)
+        return Verdict(False, "已登记到这一轮的批次里，等本轮结束合并成一条带按钮的提议；不要在对话里另行追问。", item)
 
     def _single(self, item: Item) -> dict:
         return {"items": [item.to_json()], "risk": item.tier.value,
@@ -303,12 +311,18 @@ class Batch:
 
 
 def _proposal_text(items: list[Item], tier: RiskTier) -> str:
+    """气泡里给用户看的话：只讲要做什么，不出现内部分级词。
+
+    ``tier`` 仍保留在签名里（调用方按档产生提议），但 medium/high/风险
+    这类机制术语是给系统看的，写进气泡就会被原样念给用户（10-14 实测
+    "我要做这 2 件medium风险的事"），一律不出口。
+    """
     lines = [f"{i.text}" for i in items]
     if len(lines) == 1:
-        return f"我要做一件{tier.value}风险的事：\n{lines[0]}\n可以吗？"
-    return (f"我要做这 {len(lines)} 件{tier.value}风险的事：\n"
+        return f"我想帮你做这件事：\n{lines[0]}\n要我开始吗？"
+    return (f"我想帮你做这 {len(lines)} 件事：\n"
             + "\n".join(f"{n}. {line}" for n, line in enumerate(lines, 1))
-            + "\n可以一次一起做吗？")
+            + "\n要一起做吗？")
 
 
 # ── 落盘：GUI 是另一个进程，批准与执行都在那边 ───────────────────────────────
@@ -343,7 +357,7 @@ def expired(batch: dict, policy: Policy | None = None) -> bool:
     """TTL：过期的批次提议不能再被拿来执行。
 
     这是批量闸门唯一的刹车。一次点头放行 3 份产出没问题，
-    但不能让那份授权在半小时后还能被用来写第 4 份。
+    但不能让那份授权在补点窗口（默认 2 小时，issue #26）之后还能被用来写第 4 份。
     """
     window = (policy or load_policy()).batch_window_s
     try:

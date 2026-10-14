@@ -2,6 +2,7 @@
 用 pack 自动排版，文字换行后整体变高，不会互相重叠；对话框始终贴在小精灵上方。
 - 标题行：小精灵 + 右上角 ×
 - 状态：小精灵当前的判断（灰色小字）
+- 待回应：气泡消失时没看见的提议，在这里补点「好的/不用」（issue #26）
 - 回应：发送后它的回应（深色正文），对话框保持打开
 - 输入：输入框 + 发送按钮；回车发送，Esc 关闭
 """
@@ -23,8 +24,11 @@ INPUT_BG = "#f4fbfc"
 
 class ChatDialog:
     def __init__(self, root: tk.Tk, anchor_x: int, anchor_y: int, status: str,
-                 on_send: Callable[[str], str], history: list[dict] | None = None):
+                 on_send: Callable[[str], str], history: list[dict] | None = None,
+                 pending: list[dict] | None = None,
+                 on_decide: Callable[[dict, bool], None] | None = None):
         self.anchor = (anchor_x, anchor_y); self.on_send = on_send
+        self.on_decide = on_decide
         self.win = tk.Toplevel(root); self.win.overrideredirect(True); self.win.attributes("-topmost", True)
         self.win.configure(bg=EDGE)
         card = tk.Frame(self.win, bg=BG, padx=PAD, pady=PAD); card.pack(padx=2, pady=2)
@@ -39,6 +43,10 @@ class ChatDialog:
         self.status = tk.Label(card, text=status, bg=BG, fg=MUTED, font=(FONT[0], BODY_FONT),
                                wraplength=CARD_W - 2 * PAD, justify="left", anchor="w")
         self.status.pack(fill="x")
+        # 错过气泡 ≠ 拒绝：补点窗口（默认 2h）内的未决提议摆在这里，点了走与气泡
+        # 点头完全相同的执行链（issue #26）。
+        if pending:
+            self._build_pending(card, pending)
         history_frame = tk.Frame(card, bg=BG)
         history_frame.pack(fill="both", expand=True, pady=(8, 0))
         self.history_box = tk.Text(history_frame, height=13, width=52, wrap="word", state="disabled",
@@ -81,6 +89,48 @@ class ChatDialog:
             return all(getattr(self, name).winfo_exists() for name in widgets)
         except tk.TclError:
             return False
+
+    def _build_pending(self, parent: tk.Widget, offers: list[dict]) -> None:
+        """「它刚问你的事」：错过的提议在补点窗口内可在这里点头或拒绝。"""
+        box = tk.Frame(parent, bg=BG)
+        box.pack(fill="x", pady=(10, 0))
+        tk.Label(box, text="它刚问你的事（没看见的话可以在这里补点）", bg=BG, fg=MUTED,
+                 font=(FONT[0], BODY_FONT - 2), anchor="w").pack(fill="x")
+        for offer in list(offers)[-3:]:
+            self._add_pending_card(box, offer)
+
+    def _add_pending_card(self, box: tk.Widget, offer: dict) -> None:
+        card = tk.Frame(box, bg=INPUT_BG, highlightbackground=EDGE, highlightthickness=1)
+        card.pack(fill="x", pady=(6, 0))
+        tk.Label(card, text=str(offer.get("text") or "")[:200], bg=INPUT_BG, fg=TXT,
+                 font=(FONT[0], BODY_FONT), wraplength=CARD_W - 2 * PAD - 24,
+                 justify="left", anchor="w").pack(fill="x", padx=10, pady=(8, 4))
+        row = tk.Frame(card, bg=INPUT_BG)
+        row.pack(fill="x", padx=10, pady=(0, 8))
+
+        def choose(approved: bool) -> None:
+            if not self._alive():
+                return
+            try:
+                if self.on_decide is not None:
+                    self.on_decide(offer, approved)
+            except Exception as exc:  # 落账/执行链异常不能把对话框带崩
+                print(f"pending decide error: {type(exc).__name__}: {exc}", flush=True)
+                return
+            try:
+                card.destroy()
+            except tk.TclError:
+                return
+            self._place()
+
+        tk.Button(row, text="好的", bg=BTN, fg=BTN_TXT, activebackground=BTN,
+                  relief="flat", bd=0, font=(FONT[0], BODY_FONT - 1),
+                  padx=14, pady=2, cursor="hand2",
+                  command=lambda: choose(True)).pack(side="left")
+        tk.Button(row, text="不用", bg="#e7f0f1", fg=MUTED, activebackground="#d8e6e8",
+                  relief="flat", bd=0, font=(FONT[0], BODY_FONT - 1),
+                  padx=14, pady=2, cursor="hand2",
+                  command=lambda: choose(False)).pack(side="left", padx=(8, 0))
 
     def _place(self) -> None:
         """按内容实际高度，把对话框底边放在小精灵上方。"""

@@ -284,9 +284,40 @@ def test_visual_tier_strong_signals_request_a_fresh_image(field):
     assert brain.turn_wants_visual(**kw) is True
 
 
-def test_visual_tier_user_feedback_requests_a_fresh_image():
-    kw = dict(_VW_BASE); kw["fb"] = "他说了句话"
+def test_visual_tier_visual_feedback_requests_a_fresh_image():
+    """指向眼前画面的反馈（这/那/屏幕/窗口/白屏…）：必须带新截图。"""
+    kw = dict(_VW_BASE); kw["fb"] = "这个窗口怎么关不掉"
     assert brain.turn_wants_visual(**kw) is True
+
+
+def test_visual_tier_plain_text_feedback_is_a_fast_text_only_turn():
+    """纯文本反馈（清理 C 盘/写周报/别再提某事）不附图：截图+视觉编码正是
+    回话慢的主因（issue #27）。唤醒由主循环闸门里的 fb 负责，与此无关。"""
+    kw = dict(_VW_BASE); kw["fb"] = "帮我清理一下 C 盘"
+    assert brain.turn_wants_visual(**kw) is False
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("", False),
+    (None, False),
+    ("帮我清理一下 C 盘", False),
+    ("周报开头怎么写比较好", False),
+    ("别再提清理这件……", True),       # 「这」是视觉指代的保守宽词
+    ("这个窗口怎么关不掉", True),
+    ("上面那段话太尴尬了", True),
+    ("屏幕白屏了", True),
+    ("look at this window", True),
+])
+def test_feedback_needs_visual_word_list(text, expected):
+    assert brain.feedback_needs_visual(text) is expected
+
+
+def test_text_feedback_still_wakes_the_loop_without_an_image():
+    """纯文本反馈可以不附图，但主循环唤醒闸门里的 fb 不许被一起删掉——
+    否则回话要等下一个无关事件（10-13 实测 52.8s 延迟的同类回归）。"""
+    src = _src(BRAIN)
+    assert "if fb and feedback_needs_visual(fb):" in src, "附图条件收敛到指代词判定"
+    assert "timing_due or fb or heartbeat_due" in src, "fb 仍须独立唤醒循环"
 
 
 def test_visual_tier_plain_heartbeat_within_recheck_is_text_only():

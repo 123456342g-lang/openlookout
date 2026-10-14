@@ -436,6 +436,33 @@ def heartbeat_is_due(now: float, last_turn_finished: float) -> bool:
     return now - last_turn_finished >= HEARTBEAT_S
 
 
+def feedback_needs_visual(text: str | None) -> bool:
+    """用户这句反馈是否**指向眼前画面**（不附图就答不准）。
+
+    10-14 实测：他打字回话时，旧逻辑无条件把这一轮升级成带图视觉轮，截图 +
+    视觉编码是回话延迟的主要成本。但「帮我清理下 C 盘」「周报怎么写」
+    「别再提清理了」这类纯文本意图根本不需要新画面，watching/systemfacts 的
+    文本事实已够判断——这些走无图快速轮（issue #27）。只有「这个窗口」
+    「上面那段」「屏幕白屏了」这类视觉指代才附图。词表宁可略宽：误判只是
+    多花一轮图钱，漏判会让模型无图瞎答、回话反而更慢；无图轮模型仍可在
+    调查中用 ``_refresh_screen`` 同轮补图，这只是首拍省不省的区别。
+    """
+    if not text:
+        return False
+    lowered = text.lower()
+    return any(word in lowered for word in VISUAL_CUE_WORDS)
+
+
+# 视觉指代词表：命中任一即认为他在说自己正看着的东西。「这/那」故意保留
+# 单字——「这个怎么弄」「那样不行」绝大多数都需要看屏。
+VISUAL_CUE_WORDS = (
+    "这", "那", "此", "屏幕", "画面", "窗口", "弹窗", "对话框",
+    "白屏", "黑屏", "花屏", "显示", "看到", "看见", "上面",
+    "左上角", "左下角", "右上角", "右下角", "按钮", "图标", "颜色",
+    "this", "that", "screen", "window",
+)
+
+
 def turn_wants_visual(
     *,
     screen_due: bool,
@@ -451,19 +478,26 @@ def turn_wants_visual(
     """本轮是否需要把**新截图**送进模型（带图轮 = 最贵的资源）。
 
     高频感知由 2s 本地哨兵免费完成；模型轮分两级：强视觉信号（屏幕内容
-    变化、窗口切换、操作流断点、用户开口、离开回来、回话临期）才附图；
-    纯心跳、后台维护、历史小页、续办、目标轮走无图文本轮——watching 的
-    计时事实（同屏停多久、卡没卡、窗口轨迹）是纯文本，足以支撑「此刻该
-    不该说话」的判断，屏幕没新内容时再送一遍图只是重复花钱。
+    变化、窗口切换、操作流断点、**指向眼前画面的**用户开口、离开回来、
+    回话临期）才附图；纯心跳、后台维护、历史小页、续办、目标轮，以及
+    **纯文本反馈**（feedback_needs_visual 判否：清理 C 盘、写周报这类
+    不看屏也能答的话）走无图文本轮——watching 的计时事实（同屏停多久、
+    卡没卡、窗口轨迹）是纯文本，足以支撑「此刻该不该说话」的判断，屏幕
+    没新内容时再送一遍图只是重复花钱。
 
-    新消息本身走 ``fb``（带图）；``reply_pending`` 不进这里——它不是唤醒
-    触发（循环闸门只认 reply_due），刚发消息后的心跳轮用文本回话即可。
+    新文字消息本身仍负责**唤醒**循环（主闸门里的 ``fb`` 不动，2s 内开轮）；
+    这里只决定它附不附图。``reply_pending`` 不进这里——它不是唤醒触发
+    （循环闸门只认 reply_due），刚发消息后的心跳轮用文本回话即可。
 
     无图轮不是闭嘴轮：模型仍可依据文本事实说话或续办，只是开口必须有
     时间以外的具体事由（见 heartbeat_note）。静止超过
     ``visual_recheck_s`` 兜底刷新一次，防止视觉上下文长期过期。
     """
-    if screen_due or window_due or timing_due or fb or return_due or reply_due:
+    if screen_due or window_due or timing_due or return_due or reply_due:
+        return True
+    # 只有指向眼前画面的反馈才附图（issue #27）；纯文本反馈照样立即开轮，
+    # 只是省掉截图与视觉编码——唤醒在主循环闸门，不在这里。
+    if fb and feedback_needs_visual(fb):
         return True
     return (now - last_visual_turn) >= visual_recheck_s
 
