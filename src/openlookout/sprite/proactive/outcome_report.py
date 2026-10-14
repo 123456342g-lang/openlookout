@@ -42,7 +42,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
+import statistics
 import sys
 from collections import Counter
 from datetime import datetime
@@ -51,6 +53,13 @@ from typing import Any, Iterable, Mapping, Sequence
 
 # ── 口径：本模块自持的词表（不从 timing 导入，避免与并行改动耦合）────────────
 # 新增/未知标签不会被丢：落在 unknown 类里，单独列出。
+#
+# 词表分叉（issue #15 现状证据 2，本 PR（②）只在报告侧标注，不改另两处）：
+# 同一组状态词目前在三个文件各维护一份——
+#   * live.py 的 ``SETTLED_OFFER_STATES``（offer 结果态与 outcome 混在一个 frozenset）；
+#   * timing.py 的 ``_POSITIVE/_NEGATIVE/_NO_EVIDENCE``（acknowledged 归 no-evidence）；
+#   * 本文件的 POSITIVE/NEGATIVE/SILENCE/AMBIGUOUS（acknowledged 归 ambiguous）。
+# 行号会漂移，认符号名；①账本字段落地后是否合并词表，按 issue #15 后续方案处理。
 POSITIVE = ("accepted", "responded")          # 正面证据
 NEGATIVE = ("rejected",)                      # 负面证据（用户明确选了别的）
 SILENCE = ("ignored", "unanswered", "expired", "timeout")   # 无证据（沉默类）
@@ -73,6 +82,19 @@ MIN_PER_DAY = 5        # 单日结果少于此数 → 不画趋势
 MIN_DAYS = 2           # 少于两天 → 不画趋势
 SILENCE_HINT_S = 170.0  # companion 气泡上限 180s；latency 贴近它 → 疑似超时静默
 LATE_USER_WINDOW_S = 900.0  # 结果落库后这么久内用户打字 → 疑似漏记的「responded」
+
+# ── ② 离线四指标（issue #15）：阈值集中在此，全部只读、只描述，不做任何拦截 ──────
+MIN_METRIC_SAMPLE = 20       # 四指标统一的样本下限（与 MIN_EVIDENCE 对齐）：不足就明说「不能判断」
+CLUSTER_GAP_S = 120.0        # 相邻开口间隔 ≤ 此值 → 算同一个突发簇（#10「≤120s 成簇」口径）
+LATENCY_VALID_MAX_S = 86400.0   # latency 合理性上限 24h；超出按污染行剔除并计数
+                             # （实测 o-rej 行 latency_s=1.79e9，是测试污染，不是回应延迟）
+GAP_BIN_EDGES_S = (0.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1800.0)  # 间隔长尾直方图边界
+# ① 才会落账本的字段（issue #15 ①：offer_t/anchor/turn_trigger/reply_to）。
+# 本轮这些字段在生产 outcomes 里不存在：报告只能显式报「缺失/不可算」，绝不伪造默认值凑指标。
+FIELD_OFFER_T = "offer_t"           # 原开口时刻（①）
+FIELD_ANCHOR = "anchor"             # {app,type,title} 锚点（①）
+FIELD_TURN_TRIGGER = "turn_trigger" # timing|heartbeat|screen|feedback|reply|maintenance（①）
+FIELD_REPLY_TO = "reply_to"         # 非空 = 对话簇，主动度量要排除（①）
 
 FILE_NAMES = ("outcomes.jsonl", "offers.jsonl", "feedback.jsonl", "conversation.jsonl")
 
@@ -201,6 +223,472 @@ def _class_counts(rows: Iterable[Mapping[str, Any]]) -> dict[str, int]:
 def _meaningful(counts: Mapping[str, int]) -> int:
     """有明确证据的开口数 = 正面 + 负面（**不含沉默**，也不含模糊/未知）。"""
     return int(counts.get("positive", 0)) + int(counts.get("negative", 0))
+
+
+# ── ② 四指标：确定性纯函数（合成账本夹具可直接测，不读盘、不依赖时钟）────────────
+def _finite_number(value: Any) -> float | None:
+    """把 int/float 转成有限 float；bool、字符串、NaN/Inf 一律 None（不猜测、不解析）。"""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        out = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return out if math.isfinite(out) else None
+
+
+def _nonempty(value: Any) -> bool:
+    """锚点/reply_to 「非空」判据：None/空串/空容器不算，0/False 也不算锚点。"""
+    if value is None:
+        return False
+    if isinstance(value, (str, list, tuple, dict, set)):
+        return len(value) > 0
+    return bool(value)
+
+
+def _percentile(sorted_vals: Sequence[float], q: float) -> float | None:
+    """确定性最近秩百分位（nearest-rank, rank=ceil(q*n)）；入参需已升序。"""
+    if not sorted_vals:
+        return None
+    rank = math.ceil(q * len(sorted_vals))
+    return float(sorted_vals[max(0, min(rank - 1, len(sorted_vals) - 1))])
+
+
+FIELD_KEYS = (FIELD_OFFER_T, FIELD_ANCHOR, FIELD_TURN_TRIGGER, FIELD_REPLY_TO)
+
+
+def _field_status_one(rows: Sequence[Mapping[str, Any]]) -> dict[str, dict]:
+    """① 四个新字段在一本账本里的存在情况（只读盘点，不补默认值）。"""
+    total = len(rows)
+    out: dict[str, dict] = {}
+    for key in FIELD_KEYS:
+        with_key = sum(1 for r in rows if key in r)
+        nonempty = sum(1 for r in rows if _nonempty(r.get(key)))
+        out[key] = {"rows_total": total, "rows_with_key": with_key,
+                    "rows_nonempty": nonempty}
+    return out
+
+
+def ledger_field_status(outcomes: Sequence[Mapping[str, Any]],
+                        offer_rows: Sequence[Mapping[str, Any]] = ()) -> dict:
+    """① 四个新字段的存在盘点，**按数据源分列**（P2-1）。
+
+    ``reply_to`` 今天就由 session 发布时写进 offer dict 并随 offers.jsonl 落盘，
+    而 outcomes 侧要等①；所以不能只盘 outcomes 就断言「字段整体缺失」。
+    """
+    return {"outcomes": _field_status_one(outcomes),
+            "offers": _field_status_one(offer_rows)}
+
+
+def _row_is_reply_cluster(row: Mapping[str, Any]) -> bool:
+    """outcome 行自己带的①对话簇标记：reply_to 非空，或 turn_trigger == "reply"。"""
+    if _nonempty(row.get(FIELD_REPLY_TO)):
+        return True
+    return str(row.get(FIELD_TURN_TRIGGER) or "").strip().lower() == "reply"
+
+
+def opening_moments(outcomes: Sequence[Mapping[str, Any]],
+                    offers: Mapping[str, Mapping[str, Any]]) -> dict:
+    """为每条 outcome 还原一个「主动开口时刻」，并逐行标注来源，**绝不伪造**。
+
+    可信时刻来源（取第一个可用的；前三个都精确，第四个不存在——拿不到就按污染剔除）：
+      1. ``offer_t``——① 落地后的原开口时刻（当前生产账本没有，预留自动启用）；
+      2. offers.jsonl 按现有 id join 到的 offer ``t``（提议侧记录的开口时刻）；
+      3. ``t - latency_s`` 重构——record_outcome 写盘时 latency_s 就是
+         ``结果时刻 - offer['t']``（live.py record_outcome），所以这是换算不是猜测，
+         沉默行同样成立；要求 0 ≤ latency_s ≤ LATENCY_VALID_MAX_S；
+      4. 前三个都拿不到（join 缺失且 latency 缺失/非法，实测如 o-rej 的 1.79e9s）
+         → **不静默读秒**：单列为疑似污染，从主动开口序列剔除并计数点名。
+    连结果时刻 t 都没有的行另计 ``no_timestamp_rows``。
+
+    对话簇排除（两个数据源，①的 outcome 侧优先，P2-1）：
+      * outcome 行自带 reply_to 非空 / turn_trigger=="reply"（①字段）；
+      * 否则 join 到的 offer 行带非空 reply_to——该字段①未落地前**今天就在
+        offers.jsonl 里**（session 发布时摘进 offer dict），实测生产 6 行。
+    两侧都没有标记时才如实说明「无法识别对话簇」，不再与 offers join 覆盖率自相矛盾。
+    """
+    moments: list[dict] = []
+    sources: Counter = Counter()
+    excluded_reply_outcomes = 0
+    excluded_reply_offers = 0
+    polluted: list[dict] = []
+    no_ts = 0
+    reply_outcomes_present = any(FIELD_REPLY_TO in r or FIELD_TURN_TRIGGER in r
+                                 for r in outcomes)
+    reply_offers_present = any(
+        isinstance(r, Mapping) and (_nonempty(r.get(FIELD_REPLY_TO))
+                                    or FIELD_REPLY_TO in r
+                                    or FIELD_TURN_TRIGGER in r)
+        for r in offers.values())
+    for row in outcomes:
+        linked = offers.get(str(row.get("id") or ""))
+        if _row_is_reply_cluster(row):
+            excluded_reply_outcomes += 1
+            continue
+        if isinstance(linked, Mapping) and (
+                _nonempty(linked.get(FIELD_REPLY_TO))
+                or str(linked.get(FIELD_TURN_TRIGGER) or "").strip().lower() == "reply"):
+            # offer 侧的回话簇标记（①前唯一在盘的来源）；①的 outcome 侧已在上面优先判过
+            excluded_reply_offers += 1
+            continue
+        ts: float | None = None
+        source: str | None = None
+        offer_t = _finite_number(row.get(FIELD_OFFER_T))
+        if offer_t is not None:
+            ts, source = offer_t, "offer_t"
+        if ts is None and isinstance(linked, Mapping):
+            joined_t = _finite_number(linked.get("t"))
+            if joined_t is not None:
+                ts, source = joined_t, "offers_join"
+        t = _finite_number(row.get("t"))
+        latency = _finite_number(row.get("latency_s"))
+        latency_valid = latency is not None and 0.0 <= latency <= LATENCY_VALID_MAX_S
+        if ts is None:
+            if t is not None and latency_valid:
+                ts, source = t - latency, "reconstructed_t_minus_latency"
+            elif t is not None:
+                # join 缺失（且无 offer_t）+ latency 缺失/非法 → 只剩带超时偏移的
+                # 结果时刻可读；读它就是静默读秒（o-rej 即此路径），剔除并点名。
+                reason_bits = []
+                if offer_t is None and not isinstance(linked, Mapping):
+                    reason_bits.append("offers_join 缺失")
+                if latency is None:
+                    reason_bits.append("latency_s 缺失")
+                else:
+                    reason_bits.append(
+                        f"latency_s 非法（{latency:.1f}s 超出 0~"
+                        f"{int(LATENCY_VALID_MAX_S)}s）")
+                polluted.append({
+                    "id": str(row.get("id") or ""),
+                    "outcome": str(row.get("outcome") or ""),
+                    "latency_s": latency,
+                    "reason": "；".join(reason_bits) or "开口时刻不可信",
+                })
+                continue
+            else:
+                no_ts += 1
+                continue
+        moments.append({"id": str(row.get("id") or ""), "ts": ts, "source": source})
+        sources[source] += 1
+    moments.sort(key=lambda m: (m["ts"], m["id"]))
+    return {"moments": moments, "timestamp_sources": dict(sorted(sources.items())),
+            "excluded_reply_rows": excluded_reply_outcomes + excluded_reply_offers,
+            "excluded_reply_rows_outcomes": excluded_reply_outcomes,
+            "excluded_reply_rows_offers": excluded_reply_offers,
+            "reply_outcomes_present": reply_outcomes_present,
+            "reply_offers_present": reply_offers_present,
+            "polluted_rows": polluted[:10],
+            "polluted_n": len(polluted),
+            "no_timestamp_rows": no_ts}
+
+
+def _gap_histogram(gaps: Sequence[float]) -> list[dict]:
+    """间隔长尾分布：0s 单列，其余按 GAP_BIN_EDGES_S 左开右闭，末桶 +∞。"""
+    counts = [0] * (len(GAP_BIN_EDGES_S) + 1)
+    for gap in gaps:
+        if gap <= 0:
+            counts[0] += 1
+            continue
+        placed = False
+        for i in range(len(GAP_BIN_EDGES_S) - 1):
+            if GAP_BIN_EDGES_S[i] < gap <= GAP_BIN_EDGES_S[i + 1]:
+                counts[i + 1] += 1
+                placed = True
+                break
+        if not placed:
+            counts[-1] += 1
+    labels = ["0s"]
+    labels += [f"({GAP_BIN_EDGES_S[i]:.0f}, {GAP_BIN_EDGES_S[i + 1]:.0f}]s"
+               for i in range(len(GAP_BIN_EDGES_S) - 1)]
+    labels.append(f">{GAP_BIN_EDGES_S[-1]:.0f}s")
+    return [{"bin_s": label, "n": n} for label, n in zip(labels, counts)]
+
+
+def burstiness(moments_info: Mapping[str, Any]) -> dict:
+    """指标 1：主动开口间隔突发度——中位/p90、CV=σ/μ、≤120s 成簇与长尾分布。
+
+    CV **只监控、不拦截**（issue #15 非目标：不设配额/阈值闸）；
+    样本 < MIN_METRIC_SAMPLE 时数字照给（描述性），但结论必须是「不能判断」。
+
+    本函数**内部先按时间排序**（P2-4）：gap 序列、成簇 run、来源对标注全部基于
+    同一份排序结果，不依赖调用方喂入顺序。
+    """
+    moments = sorted(moments_info.get("moments") or (),
+                     key=lambda m: (float(m["ts"]), str(m.get("id") or "")))
+    ts = [float(m["ts"]) for m in moments]
+    srcs = [str(m.get("source") or "?") for m in moments]
+    # 排序后相邻对严格一一对应：不再丢负 gap（相等时刻产生 0s gap，仍计入成簇）
+    gaps = [b - a for a, b in zip(ts, ts[1:])]
+    gap_pairs = [f"{a}→{b}" for a, b in zip(srcs, srcs[1:])]
+    pair_counter = Counter(gap_pairs)
+    mixed_n = sum(n for pair, n in pair_counter.items()
+                  if pair.split("→")[0] != pair.split("→")[1])
+    n_openings = len(ts)
+    out: dict[str, Any] = {
+        "n_openings": n_openings,
+        "n_gaps": len(gaps),
+        "timestamp_sources": moments_info.get("timestamp_sources", {}),
+        "cluster_gap_s": CLUSTER_GAP_S,
+        "excluded_reply_rows": moments_info.get("excluded_reply_rows", 0),
+        "excluded_reply_rows_outcomes": moments_info.get("excluded_reply_rows_outcomes", 0),
+        "excluded_reply_rows_offers": moments_info.get("excluded_reply_rows_offers", 0),
+        "reply_outcomes_present": moments_info.get("reply_outcomes_present", False),
+        "reply_offers_present": moments_info.get("reply_offers_present", False),
+        "polluted_n": moments_info.get("polluted_n", 0),
+        "polluted_rows": moments_info.get("polluted_rows", []),
+        "no_timestamp_rows": moments_info.get("no_timestamp_rows", 0),
+        "gap_mixed_source_n": mixed_n,
+        "gap_source_pairs": dict(sorted(pair_counter.items())),
+        "gap_median_s": None, "gap_p90_s": None, "gap_mean_s": None,
+        "gap_std_s": None, "gap_cv": None, "gap_min_s": None, "gap_max_s": None,
+        "gap_histogram": [],
+        "cluster_n": 0, "turns_in_clusters": 0, "singleton_n": n_openings,
+        "cluster_size_histogram": {}, "largest_cluster_turns": 0,
+        "cv_policy": "CV=σ/μ（总体标准差）只监控、不拦截，本报告不设任何阈值闸。",
+    }
+    if gaps:
+        ordered = sorted(gaps)
+        mean_gap = statistics.fmean(gaps)
+        std_gap = statistics.pstdev(gaps)
+        out.update({
+            "gap_median_s": float(statistics.median(ordered)),
+            "gap_p90_s": _percentile(ordered, 0.90),
+            "gap_mean_s": float(mean_gap),
+            "gap_std_s": float(std_gap),
+            "gap_cv": float(std_gap / mean_gap) if mean_gap > 0 else None,
+            "gap_min_s": float(ordered[0]),
+            "gap_max_s": float(ordered[-1]),
+            "gap_histogram": _gap_histogram(gaps),
+        })
+    # 成簇：时间序上，相邻开口间隔 ≤ CLUSTER_GAP_S 归入同一簇（与上面 gaps 同源）
+    sizes: list[int] = []
+    if ts:
+        run = 1
+        for gap in gaps:
+            if gap <= CLUSTER_GAP_S:
+                run += 1
+            else:
+                sizes.append(run)
+                run = 1
+        sizes.append(run)
+    burst_sizes = [s for s in sizes if s >= 2]
+    out["cluster_n"] = len(burst_sizes)
+    out["turns_in_clusters"] = sum(burst_sizes)
+    out["singleton_n"] = sum(1 for s in sizes if s == 1)
+    out["cluster_size_histogram"] = {str(k): v for k, v in
+                                     sorted(Counter(burst_sizes).items())}
+    out["largest_cluster_turns"] = max(burst_sizes, default=0)
+
+    if n_openings < 2:
+        out["verdict"] = ("不能判断：可信开口时刻的行不足 2 条，连一个间隔都算不出来"
+                          "（不是 CV=0，也不是节奏平稳）。")
+    elif n_openings < MIN_METRIC_SAMPLE:
+        out["verdict"] = (f"样本不足，不能判断突发度是否异常：只有 {n_openings} 个可信开口"
+                          f"（<{MIN_METRIC_SAMPLE}）；以下间隔/簇数字仅作描述，"
+                          f"CV 只监控、不拦截。")
+    else:
+        out["verdict"] = (f"描述性结果（n={n_openings}，未做显著性检验）：间隔中位数 "
+                          f"{out['gap_median_s']:.1f}s、p90 {out['gap_p90_s']:.1f}s、"
+                          f"CV={out['gap_cv']:.3f}；{out['cluster_n']} 个 ≤"
+                          f"{int(CLUSTER_GAP_S)}s 突发簇。CV 只监控、不拦截，"
+                          f"本报告不据此给好坏结论。")
+    notes = ["开口时刻来源计数（逐行标注，不伪造；三个来源均精确，无超时偏移）："
+             + (json.dumps(out["timestamp_sources"], ensure_ascii=False) or "{}")]
+    if out["polluted_n"]:
+        ids = "、".join(str(p.get("id") or "") for p in out["polluted_rows"][:5])
+        notes.append(f"疑似污染 {out['polluted_n']} 行已从开口序列剔除（不静默读秒；"
+                     f"如 join 缺失 + latency 非法）：{ids}")
+    # 对话簇排除：两个数据源如实分开说（P2-1），不能再笼统声称「字段缺失无法排除」
+    if out["excluded_reply_rows"]:
+        notes.append(
+            f"已排除对话簇开口 {out['excluded_reply_rows']} 行"
+            f"（outcomes 侧①字段 {out['excluded_reply_rows_outcomes']} 行；"
+            f"offers.jsonl join 侧 reply_to {out['excluded_reply_rows_offers']} 行"
+            f"——该字段①落地前已随 offer 落盘）。")
+    if not out["reply_outcomes_present"] and not out["reply_offers_present"]:
+        notes.append("outcomes 与 offers 两侧都没有 reply_to/turn_trigger 标记："
+                     "无法识别对话簇，间隔序列可能混入「用户回话引出的再开口」。")
+    elif not out["reply_outcomes_present"]:
+        notes.append("outcomes 侧 reply_to/turn_trigger 仍缺失（①未落地）："
+                     "当前排除只覆盖 offers join 命中的开口，join 不上的行无法判别。")
+    if out["gap_mixed_source_n"]:
+        notes.append(
+            f"{out['gap_mixed_source_n']} 个 gap 的两个端点来自不同时刻来源，"
+            f"来源对分布 {json.dumps(out['gap_source_pairs'], ensure_ascii=False)}；"
+            f"消费方据此识别混合边界（三来源均精确，仅作溯源标注）。")
+    if out["no_timestamp_rows"]:
+        notes.append(f"{out['no_timestamp_rows']} 行连结果时刻都缺失，未计入序列。")
+    out["notes"] = notes
+    return out
+
+
+def anchor_stats(outcomes: Sequence[Mapping[str, Any]],
+                 field_status: Mapping[str, Mapping[str, Any]]) -> dict:
+    """指标 2：无锚点占比（按 kind 分列）。① 的 anchor 字段缺失时显式「不可算」。
+
+    P2-5：**分母只数 anchor 字段存在的行**。字段缺失（①灰度期的历史行）与
+    「字段存在但确认为空」在结构上严格分开，JSON 消费方不能把缺失误读成无锚点开火。
+    每个 kind 给 ``coverage = with_field/n``，占比 = anchorless_confirmed/with_field。
+    """
+    total = len(outcomes)
+    status = dict(field_status.get(FIELD_ANCHOR) or {})
+    with_key = int(status.get("rows_with_key") or 0)
+    by_kind: dict[str, dict] = {}
+    for row in outcomes:
+        kind = str(row.get("kind") or "(缺失)") or "(缺失)"
+        entry = by_kind.setdefault(kind, {
+            "n": 0, "with_field": 0, "anchored": 0,
+            "anchorless_confirmed": 0, "missing_field": 0})
+        entry["n"] += 1
+        if FIELD_ANCHOR in row:
+            entry["with_field"] += 1
+            if _nonempty(row.get(FIELD_ANCHOR)):
+                entry["anchored"] += 1
+            else:
+                entry["anchorless_confirmed"] += 1
+        else:
+            entry["missing_field"] += 1
+    for entry in by_kind.values():
+        entry["coverage"] = entry["with_field"] / entry["n"] if entry["n"] else None
+        # 分母只算字段存在的行；字段缺失不进分子也不进分母
+        entry["anchorless_rate"] = (
+            entry["anchorless_confirmed"] / entry["with_field"]
+            if entry["with_field"] else None)
+    out: dict[str, Any] = {
+        "total": total,
+        "rows_with_anchor_key": with_key,
+        "coverage": with_key / total if total else None,
+        "field_status": status,
+        "by_kind": dict(sorted(by_kind.items())),
+        "red_line": "≈0（issue #10：主动开口应几乎全部带锚点）",
+        "denominator_note": "anchorless_rate 的分母 = 该 kind 内 anchor 字段存在的行；"
+                            "字段缺失行进 coverage/missing_field，不进占比。",
+    }
+    if total == 0:
+        out["computable"] = False
+        out["anchorless_rate_overall"] = None
+        out["verdict"] = "不能判断：outcomes.jsonl 没有任何行，无锚点占比无从算起。"
+        return out
+    if with_key == 0:
+        # 铁律：①未落地时绝不给默认值凑出一个「100% 无锚点」
+        out["computable"] = False
+        out["anchorless_rate_overall"] = None
+        out["verdict"] = ("锚点字段缺失（①未落地）：0/" + str(total)
+                          + " 行含 anchor 字段，无锚点占比不可算——"
+                            "不伪造默认值，也不把「字段缺失」当成「无锚点开火」。")
+        return out
+    confirmed = sum(e["anchorless_confirmed"] for e in by_kind.values())
+    out["computable"] = True
+    out["anchorless_rate_overall"] = confirmed / with_key
+    if with_key < total:
+        out["verdict"] = (f"部分可算：仅 {with_key}/{total} 行带 anchor 字段"
+                          f"（覆盖率 {with_key / total:.3f}）；占比分母只数这 {with_key} 行，"
+                          f"其余 {total - with_key} 行字段缺失、单列不进分母，"
+                          f"勿把历史行当成无锚点开火。")
+    else:
+        out["verdict"] = f"可算：{total}/{total} 行带 anchor 字段（覆盖率 1.000），" \
+                         f"整体无锚点占比 {out['anchorless_rate_overall']:.3f}（红线≈0）。"
+    return out
+
+
+def response_rates(classes: Mapping[str, int]) -> dict:
+    """指标 3：回应率双口径并列（分母不同，绝不混成一个数）。
+
+    * 观测回应率（三类标签）= (正面+负面) / (正面+负面+沉默)：沉默**进**分母，
+      回答的是「用户有没有给出任何可观测反应」；
+    * 有证据正面率 = 正面 / (正面+负面)：沉默**不进**分母，沿用
+      ``_meaningful``（既有口径），回答的是「明确回应里正面占多少」。
+    """
+    pos = int(classes.get("positive", 0))
+    neg = int(classes.get("negative", 0))
+    sil = int(classes.get("silence", 0))
+    amb = int(classes.get("ambiguous", 0))
+    unk = int(classes.get("unknown", 0))
+    obs_den = pos + neg + sil
+    ev_den = pos + neg
+    observed = {
+        "name": "观测回应率（三类标签）",
+        "numerator": pos + neg, "denominator": obs_den,
+        "rate": (pos + neg) / obs_den if obs_den else None,
+        "denominator_note": "正面+负面+沉默；沉默（无回应）进分母",
+    }
+    evidence = {
+        "name": "有证据正面率",
+        "numerator": pos, "denominator": ev_den,
+        "rate": pos / ev_den if ev_den else None,
+        "denominator_note": "正面+负面；沉默不进分母（沿用既有 _meaningful 口径）",
+    }
+    out = {"observed_response_rate": observed,
+           "evidence_positive_rate": evidence,
+           "excluded_from_both": {"ambiguous": amb, "unknown": unk}}
+    if obs_den < MIN_METRIC_SAMPLE or ev_den < MIN_METRIC_SAMPLE:
+        out["verdict"] = (f"样本不足，不能判断回应率高低：观测口径分母 {obs_den}、"
+                          f"有证据口径分母 {ev_den}（任一 <{MIN_METRIC_SAMPLE}）；"
+                          f"两个比率仅作描述，且分母不同，禁止互相替代。")
+    else:
+        out["verdict"] = ("双口径并列（分母不同、回答的问题不同）："
+                          f"观测回应率 {observed['rate']:.3f}（沉默进分母），"
+                          f"有证据正面率 {evidence['rate']:.3f}（沉默不进分母）。")
+    return out
+
+
+def receptivity_latency(outcomes: Sequence[Mapping[str, Any]]) -> dict:
+    """指标 4：receptivity 延迟中位/p75/p90（只统计用户**有明确回应**的行）。
+
+    沉默行的 latency_s 是气泡存活时长（≈180s 超时），不是回应延迟，必须排除；
+    超过 LATENCY_VALID_MAX_S 的值按污染行剔除并计数（实测 o-rej=1.79e9s）。
+    """
+    vals: list[float] = []
+    per_class = Counter()
+    silence_n = ambiguous_n = unknown_n = invalid_n = 0
+    invalid_examples: list[dict] = []
+    for row in outcomes:
+        cls = classify(row.get("outcome"))
+        latency = _finite_number(row.get("latency_s"))
+        if cls in ("positive", "negative"):
+            if latency is not None and 0.0 <= latency <= LATENCY_VALID_MAX_S:
+                vals.append(latency)
+                per_class[cls] += 1
+            else:
+                invalid_n += 1
+                if len(invalid_examples) < 5:
+                    invalid_examples.append(
+                        {"id": str(row.get("id") or ""), "outcome": cls,
+                         "latency_s": latency})
+        elif cls == "silence":
+            silence_n += 1
+        elif cls == "ambiguous":
+            ambiguous_n += 1
+        else:
+            unknown_n += 1
+    ordered = sorted(vals)
+    n = len(vals)
+    out: dict[str, Any] = {
+        "n": n,
+        "by_class": dict(sorted(per_class.items())),
+        "median_s": _percentile(ordered, 0.50),
+        "p75_s": _percentile(ordered, 0.75),
+        "p90_s": _percentile(ordered, 0.90),
+        "min_s": float(ordered[0]) if ordered else None,
+        "max_s": float(ordered[-1]) if ordered else None,
+        "excluded_silence_rows": silence_n,
+        "excluded_ambiguous_rows": ambiguous_n,
+        "excluded_unknown_rows": unknown_n,
+        "excluded_invalid_latency_rows": invalid_n,
+        "invalid_examples": invalid_examples,
+        "population_note": "总体 = 正面+负面行且 0≤latency_s≤24h；"
+                           "沉默行的 latency 是气泡超时时长而非回应延迟，已排除。",
+    }
+    if n == 0:
+        out["verdict"] = "不能判断：没有任何带合法 latency_s 的明确回应行。"
+    elif n < MIN_METRIC_SAMPLE:
+        out["verdict"] = (f"样本不足，不能判断回应延迟是快是慢：明确回应行只有 {n} 条"
+                          f"（<{MIN_METRIC_SAMPLE}）；分位数仅作描述。")
+    else:
+        out["verdict"] = (f"描述性结果（n={n}，未做显著性检验）：回应延迟中位 "
+                          f"{out['median_s']:.1f}s / p75 {out['p75_s']:.1f}s / "
+                          f"p90 {out['p90_s']:.1f}s。")
+    return out
 
 
 # ── 校准状态（弱依赖 timing.py；拿不到就降级）────────────────────────────────
@@ -433,13 +921,21 @@ def summarize(perceive_dir: Path, *, app: str = "default",
                               "新增的 outcome 字符串（如 T1 的 unanswered）若不在本模块词表里，"
                               "会出现在这里。")
 
+    # 2b) issue #15 ②：离线四指标（全部确定性纯函数；缺 ① 字段时显式降级，不伪造）
+    offer_rows = data["offers.jsonl"]
+    field_status = ledger_field_status(outcomes, offer_rows)
+    report["ledger_fields"] = field_status
+    report["burstiness"] = burstiness(opening_moments(outcomes, offers_map))
+    report["anchors"] = anchor_stats(outcomes, field_status["outcomes"])
+    report["response_rates"] = response_rates(classes)
+    report["receptivity_latency"] = receptivity_latency(outcomes)
+
     # 4) 按天
     days = _day_summary(outcomes)
     report["days"] = days
     report["trend"] = trend_verdict(days)
 
     # 5) 提议侧（offers.jsonl）：kind × result + join 覆盖率
-    offer_rows = data["offers.jsonl"]
     offer_kinds: dict[str, dict] = {}
     for row in offer_rows:
         kind = str(row.get("kind") or "(缺失)")
@@ -565,6 +1061,14 @@ def _rate(value: Any) -> str:
     return f"{float(value):.3f}"
 
 
+def _fmt_s(value: Any) -> str:
+    """秒数格式化：None → 占位；整数秒不带小数。"""
+    if value is None:
+        return "—"
+    v = float(value)
+    return f"{v:.0f}s" if abs(v - round(v)) < 1e-9 else f"{v:.1f}s"
+
+
 def _cell(text: Any, limit: int = 60) -> str:
     out = str(text if text is not None else "").replace("|", "\\|").replace("\n", " ").strip()
     if len(out) > limit:
@@ -645,6 +1149,102 @@ def render_markdown(report: Mapping[str, Any]) -> str:
                      "（acknowledged = 用户只是看见/点了「好」，不等于愿意）")
     lines.append("")
 
+    # 2b. issue #15 ②：离线四指标
+    lines.append("## 2b. 离线四指标（issue #15 ②，只读；样本不足一律明说「不能判断」）")
+    lines.append("")
+    fields = report["ledger_fields"]
+    lines.append("① 账本字段盘点（offer_t/anchor/turn_trigger/reply_to，按数据源分列）：")
+    for source, label in (("outcomes", "outcomes.jsonl（①落地侧）"),
+                          ("offers", "offers.jsonl（reply_to 今天已随 offer 落盘）")):
+        lines.append(f"- {label}：")
+        for key, info in fields[source].items():
+            lines.append(f"  - `{key}`：{info['rows_with_key']}/{info['rows_total']} 行带键，"
+                         f"其中非空 {info['rows_nonempty']}")
+    lines.append("")
+
+    burst = report["burstiness"]
+    lines.append("### 2b-1. 间隔突发度（主动开口 gap）")
+    lines.append("")
+    lines.append(f"- 可信开口数 = {burst['n_openings']}，间隔数 = {burst['n_gaps']}；"
+                 f"成簇口径 = 相邻间隔 ≤ {burst['cluster_gap_s']:.0f}s；"
+                 f"已排除对话簇 {burst['excluded_reply_rows']} 行、疑似污染 "
+                 f"{burst['polluted_n']} 行")
+    if burst["n_gaps"]:
+        lines.append(f"- gap 中位数 = **{_fmt_s(burst['gap_median_s'])}**，"
+                     f"p90 = **{_fmt_s(burst['gap_p90_s'])}**，"
+                     f"均值 = {_fmt_s(burst['gap_mean_s'])}，"
+                     f"σ = {_fmt_s(burst['gap_std_s'])}，"
+                     f"**CV=σ/μ = {_rate(burst['gap_cv'])}**"
+                     f"（最小 {_fmt_s(burst['gap_min_s'])} / 最大 {_fmt_s(burst['gap_max_s'])}）")
+        hist = "；".join(f"{b['bin_s']}×{b['n']}" for b in burst["gap_histogram"])
+        lines.append(f"- 间隔长尾分布：{hist}")
+        lines.append(f"- 跨时刻来源的 gap = {burst['gap_mixed_source_n']} 个"
+                     f"（来源对分布 {burst['gap_source_pairs']}，用于识别混合边界）")
+    else:
+        lines.append("- 间隔不足 1 个，分位数/CV/长尾均无法计算。")
+    lines.append(f"- ≤{burst['cluster_gap_s']:.0f}s 突发簇 = **{burst['cluster_n']} 簇**，"
+                 f"簇内轮次合计 {burst['turns_in_clusters']}，最大簇 {burst['largest_cluster_turns']} 轮，"
+                 f"孤立开口 {burst['singleton_n']} 个；簇大小分布（簇轮次→簇数）= "
+                 f"{burst['cluster_size_histogram'] or '{}'}")
+    lines.append(f"- {burst['cv_policy']}")
+    lines.append(f"- **判定：{burst['verdict']}**")
+    for note in burst["notes"]:
+        lines.append(f"  - {note}")
+    lines.append("")
+
+    anchors = report["anchors"]
+    lines.append("### 2b-2. 无锚点占比（按 kind 分列，红线≈0）")
+    lines.append("")
+    lines.append(f"- **判定：{anchors['verdict']}**")
+    if anchors.get("computable"):
+        lines.append(f"- 整体无锚点占比 = **{_rate(anchors.get('anchorless_rate_overall'))}**"
+                     f"（分母只数 anchor 字段存在的 {anchors['rows_with_anchor_key']} 行；"
+                     f"全量 {anchors['total']} 行，覆盖率 "
+                     f"{_rate(anchors.get('coverage'))}；字段缺失不进占比）")
+        lines.append("")
+        lines.append("| kind | 样本量 | 字段覆盖率 | 有锚点 | 确认无锚点 | 字段缺失 | 无锚点占比 |")
+        lines.append("|---|---|---|---|---|---|---|")
+        for kind, entry in anchors["by_kind"].items():
+            lines.append(f"| {_cell(kind)} | {entry['n']} | {_rate(entry['coverage'])} "
+                         f"| {entry['anchored']} | {entry['anchorless_confirmed']} "
+                         f"| {entry['missing_field']} | {_rate(entry['anchorless_rate'])} |")
+        lines.append("")
+        lines.append(f"> {anchors['denominator_note']}")
+    lines.append("")
+
+    rates = report["response_rates"]
+    obs = rates["observed_response_rate"]
+    epr = rates["evidence_positive_rate"]
+    lines.append("### 2b-3. 回应率（双口径并列，分母不同，禁止互相替代）")
+    lines.append("")
+    lines.append(f"- **{obs['name']}** = (正面+负面)/(正面+负面+沉默) = "
+                 f"{obs['numerator']}/{obs['denominator']} = **{_rate(obs['rate'])}**"
+                 f"——{obs['denominator_note']}")
+    lines.append(f"- **{epr['name']}** = 正面/(正面+负面) = "
+                 f"{epr['numerator']}/{epr['denominator']} = **{_rate(epr['rate'])}**"
+                 f"——{epr['denominator_note']}")
+    excluded = rates["excluded_from_both"]
+    lines.append(f"- 两个口径都不含模糊 {excluded['ambiguous']} 行、未知 {excluded['unknown']} 行。")
+    lines.append(f"- **判定：{rates['verdict']}**")
+    lines.append("")
+
+    delay = report["receptivity_latency"]
+    lines.append("### 2b-4. receptivity 延迟（明确回应行；沉默/污染行已排除）")
+    lines.append("")
+    lines.append(f"- 样本 n = {delay['n']}（正面 {delay['by_class'].get('positive', 0)} / "
+                 f"负面 {delay['by_class'].get('negative', 0)}）；"
+                 f"中位 = **{_fmt_s(delay['median_s'])}**，"
+                 f"p75 = **{_fmt_s(delay['p75_s'])}**，"
+                 f"p90 = **{_fmt_s(delay['p90_s'])}**"
+                 f"（区间 {_fmt_s(delay['min_s'])} ~ {_fmt_s(delay['max_s'])}）")
+    lines.append(f"- 排除：沉默 {delay['excluded_silence_rows']} 行（latency 是气泡超时时长，"
+                 f"不是回应延迟）、模糊 {delay['excluded_ambiguous_rows']}、"
+                 f"未知 {delay['excluded_unknown_rows']}、"
+                 f"非法/超 24h 污染值 {delay['excluded_invalid_latency_rows']} 行。")
+    lines.append(f"- {delay['population_note']}")
+    lines.append(f"- **判定：{delay['verdict']}**")
+    lines.append("")
+
     # 3. 未知标签
     lines.append("## 3. 未知/新出现的标签")
     lines.append("")
@@ -713,7 +1313,7 @@ def render_markdown(report: Mapping[str, Any]) -> str:
                          f"本报告读的是 `{report['files']['outcomes.jsonl']['path']}`"
                          f"——上面的 why 不对应这份数据。")
         elif aligned is True:
-            lines.append(f"  - 口径对齐：timing 读的就是本报告这份 outcomes.jsonl。")
+            lines.append("  - 口径对齐：timing 读的就是本报告这份 outcomes.jsonl。")
     lines.append("")
 
     # 6. 提议侧 + 交叉核对
