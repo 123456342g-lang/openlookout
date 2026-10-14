@@ -150,12 +150,12 @@ def test_expired_medium_batch_writes_nothing(sandbox):
 # ── 高风险：每次单问，绝不合并 ───────────────────────────────────────────
 
 def test_three_high_risk_calls_produce_three_separate_proposals(sandbox):
-    """reclaim / tidy / shell 各问一次，互不合并。"""
+    """suspend / tidy / shell 各问一次，互不合并。"""
     s = _session(sandbox)
     published: list[dict] = []
     s.gate.publish = published.append
 
-    for tool, args in (("desktop_reclaim", {}),
+    for tool, args in (("desktop_suspend", {"pid": 1234}),
                        ("desktop_tidy", {"min_files": 3, "max_items": 200}),
                        ("basic_shell", {"command": "del /q C:\\temp\\x"})):
         handler = s._handler(tool, lambda a, _n=tool: _blocked(_n))
@@ -175,13 +175,13 @@ def test_high_risk_is_not_swallowed_by_a_medium_batch(sandbox):
     s.gate.publish = published.append
 
     _deliver(s, "报告.md")
-    s._handler("desktop_reclaim", lambda a: _blocked("reclaim"))({})
+    s._handler("desktop_suspend", lambda a: _blocked("suspend"))({"pid": 1234})
     _deliver(s, "总结.md")
 
     proposals = s.gate.flush()
     medium = [p for p in proposals if p["risk"] == "medium"]
     assert len(medium) == 1 and len(medium[0]["items"]) == 2
-    assert len(published) == 2, "reclaim 独立成一条"
+    assert len(published) == 2, "suspend 独立成一条"
 
 
 def test_mutation_high_to_batch_makes_the_safety_test_go_red(sandbox):
@@ -193,8 +193,10 @@ def test_mutation_high_to_batch_makes_the_safety_test_go_red(sandbox):
     参数必须各不相同 —— 否则批次去重会正确地把它们合成一条，测的就不是合并了。
     """
     s = _session(sandbox, Policy(high=Mode.BATCH))
-    for args in ({}, {"exhaustive": True}, {"max_items": 50}):
-        s._handler("desktop_reclaim", lambda a: _blocked("reclaim"))(args)
+    for args in ({"min_files": 3, "max_items": 10},
+                 {"min_files": 5, "max_items": 20},
+                 {"min_files": 7, "max_items": 50}):
+        s._handler("desktop_tidy", lambda a: _blocked("tidy"))(args)
     assert s.gate.published == [], "batched 高风险不该在调用时就发提议"
     merged = s.gate.flush()
     assert len(merged) == 1 and len(merged[0]["items"]) == 3
@@ -204,8 +206,8 @@ def test_mutation_high_to_batch_makes_the_safety_test_go_red(sandbox):
 def test_high_risk_never_batched_under_default_policy(sandbox):
     """默认档（high=each）下高风险绝不合并 —— 这是本模块的核心安全属性。"""
     s = _session(sandbox, Policy(high=Mode.ASK))
-    for _ in range(4):
-        s._handler("desktop_reclaim", lambda a: _blocked("reclaim"))({})
+    for pid in (1001, 1002, 1003, 1004):
+        s._handler("desktop_suspend", lambda a: _blocked("suspend"))({"pid": pid})
     assert len(s.gate.published) == 4
     assert s.gate.flush() == []
 
@@ -229,7 +231,8 @@ def test_writing_permissions_json_changes_real_behaviour(sandbox):
 def test_config_default_ships_as_low_auto_medium_batch_high_each():
     policy = permissions.Policy()
     assert (policy.low, policy.medium, policy.high) == (Mode.AUTO, Mode.BATCH, Mode.ASK)
-    assert policy.batch_window_s == 180
+    # 补点窗口默认 2 小时（issue #26）：错过 120s 气泡不等于拒绝。
+    assert policy.batch_window_s == 7200
 
 
 # ── 提议走的是已验证的那条 GUI 链，不是新造的一套 ───────────────────────

@@ -33,14 +33,14 @@ DELIVER = {"name": "报告.md", "content": "正文", "sources": ["desktop_invent
 def test_effect_alone_is_not_the_risk_verdict():
     """Effect 说「动了机器」，但不说什么机器。
 
-    desktop_undo 和 desktop_reclaim 的 Effect 完全一样（ENVIRONMENT），
-    风险档却必须差三档：撤回是恢复，reclaim 一次收走过 4959 个文件。
+    desktop_undo 和 desktop_tidy 的 Effect 完全一样（ENVIRONMENT），
+    风险档却必须差三档：撤回是恢复，tidy 一次搬动最多 200 个用户文件。
     """
     undo_spec = actions.SPECS["desktop_undo"][1]
-    reclaim_spec = actions.SPECS["desktop_reclaim"][1]
-    assert undo_spec.effect == reclaim_spec.effect == Effect.ENVIRONMENT
+    tidy_spec = actions.SPECS["desktop_tidy"][1]
+    assert undo_spec.effect == tidy_spec.effect == Effect.ENVIRONMENT
     assert permissions.tier_of("desktop_undo", undo_spec) is RiskTier.LOW
-    assert permissions.tier_of("desktop_reclaim", reclaim_spec) is RiskTier.HIGH
+    assert permissions.tier_of("desktop_tidy", tidy_spec) is RiskTier.HIGH
 
 
 def test_read_only_tools_are_low_and_never_gated():
@@ -59,9 +59,22 @@ def test_own_memory_and_reversible_tools_are_low():
     assert permissions.tier_of("write_working") is RiskTier.LOW
 
 
+def test_reclaim_is_low_because_everything_it_touches_is_restorable():
+    """issue #25：reclaim 只收 risk=safe 的可再生项进隔离区、可完整还原。
+
+    10-14 实测它钉在 HIGH 的后果：C 盘只剩 0.5GB 还先弹问，用户点头后
+    任务又因别的链路失败没清成，最后他自己动手。安全可逆项自动做。
+    medium/high 候选仍由 reclaim 内部跳过，不靠这个闸门保护。
+    """
+    spec = actions.SPECS["desktop_reclaim"][1]
+    assert permissions.tier_of("desktop_reclaim", spec) is RiskTier.LOW
+    gate = Gate()
+    assert gate.admit("desktop_reclaim", {}, spec).allow
+
+
 def test_destructive_tools_are_high_and_never_batched():
-    """这五个必须每次单问。reclaim/tidy 动用户文件，shell 能绕过一切。"""
-    for tool in ("desktop_reclaim", "desktop_tidy", "desktop_suspend",
+    """这四个必须每次单问：tidy 搬用户文件、suspend/end 动进程、shell 能绕过一切。"""
+    for tool in ("desktop_tidy", "desktop_suspend",
                  "desktop_end_process", "basic_shell"):
         assert permissions.tier_of(tool, actions.SPECS[tool][1]) is RiskTier.HIGH, tool
 
@@ -110,6 +123,32 @@ def test_proposal_lists_concrete_targets_not_vague_verbs():
     assert "format c:" in gate2.published[0]["text"]
 
 
+# ── 2b. 提议是给用户看的人话：内部分级术语不出口（issue #24）──────────────
+
+_INTERNAL_WORDS = ("medium", "high", "low", "tier", "风险批次", "风险的事")
+
+
+def test_proposal_text_is_plain_chinese_without_internal_terms():
+    """10-14 实测："我要做这 2 件medium风险的事"被原样念给用户。永不复发。"""
+    one = permissions._proposal_text(
+        [permissions.Item("desktop_tidy", {}, RiskTier.HIGH, "整理桌面文件：最多 200 个文件")],
+        RiskTier.HIGH)
+    many = permissions._proposal_text(
+        [permissions.Item("desktop_write_deliverable", {}, RiskTier.MEDIUM, "写文档：a.md"),
+         permissions.Item("desktop_write_deliverable", {}, RiskTier.MEDIUM, "写文档：b.md")],
+        RiskTier.MEDIUM)
+    for text in (one, many):
+        for word in _INTERNAL_WORDS:
+            assert word not in text, f"内部术语 {word!r} 不得出现在提议文案：{text}"
+    assert "整理桌面文件" in one and "要我开始吗" in one
+    assert "2 件" in many and "a.md" in many and "要一起做吗" in many
+
+
+def test_user_facing_labels_sound_human_not_internal():
+    assert permissions.describe("desktop_reclaim", {}) == "清理临时文件和缓存"
+    assert permissions.describe("desktop_write_deliverable", {"name": "报告.md"}) == "写文档：报告.md"
+
+
 def test_batch_window_flushes_once_then_clears():
     gate = Gate()
     gate.admit("desktop_write_deliverable", DELIVER, actions.SPECS["desktop_write_deliverable"][1])
@@ -130,7 +169,7 @@ def test_different_tiers_do_not_merge_into_one_proposal():
     """中风险和高风险不能并成一条 —— 那等于让一次点头放行两类操作。"""
     gate = Gate()
     gate.admit("desktop_write_deliverable", DELIVER, actions.SPECS["desktop_write_deliverable"][1])
-    gate.admit("desktop_reclaim", {}, actions.SPECS["desktop_reclaim"][1])
+    gate.admit("desktop_tidy", {}, actions.SPECS["desktop_tidy"][1])
     gate.admit("desktop_write_deliverable", dict(DELIVER, name="另一份.md"),
                actions.SPECS["desktop_write_deliverable"][1])
     proposals = gate.flush()
@@ -143,25 +182,25 @@ def test_different_tiers_do_not_merge_into_one_proposal():
 def test_high_risk_asks_every_single_time():
     gate = Gate()
     for _ in range(3):
-        assert not gate.admit("desktop_reclaim", {}, actions.SPECS["desktop_reclaim"][1]).allow
-    assert len(gate.published) == 3, "3 次 reclaim 必须问 3 次"
+        assert not gate.admit("desktop_tidy", {}, actions.SPECS["desktop_tidy"][1]).allow
+    assert len(gate.published) == 3, "3 次 tidy 必须问 3 次"
     assert all(len(p["items"]) == 1 for p in gate.published), "高风险每次只有一条"
 
 
 def test_high_risk_never_waits_in_a_batch():
     """高风险绝不进 batches，所以 flush 不可能把它捎带出去。"""
     gate = Gate()
-    gate.admit("desktop_reclaim", {}, actions.SPECS["desktop_reclaim"][1])
+    gate.admit("desktop_tidy", {}, actions.SPECS["desktop_tidy"][1])
     gate.admit("basic_shell", {"command": "del x"}, actions.SPECS["basic_shell"][1])
     assert gate.open_batches() == []
     assert gate.flush() == []
     assert len(gate.published) == 2
 
 
-def test_reclaim_and_shell_cannot_hide_inside_a_medium_batch():
+def test_tidy_and_shell_cannot_hide_inside_a_medium_batch():
     """把 high 降级成 batch 是违规配置；即使用户这么配，也必须显式可见。"""
     gate = Gate(policy=Policy(high=Mode.BATCH))
-    gate.admit("desktop_reclaim", {}, actions.SPECS["desktop_reclaim"][1])
+    gate.admit("desktop_tidy", {}, actions.SPECS["desktop_tidy"][1])
     proposals = gate.flush()
     assert len(proposals) == 1
     # 降级后它确实会合并 —— 所以下面这条变异测试要靠这个行为变红，见
@@ -184,7 +223,7 @@ def test_all_auto_means_no_questions_at_all(tmp_path):
     """全 auto = 完全信任精灵，这是用户明确要的一个档位。"""
     gate = Gate(policy=Policy(low=Mode.AUTO, medium=Mode.AUTO, high=Mode.AUTO))
     for tool, args in (("desktop_write_deliverable", DELIVER),
-                       ("desktop_reclaim", {}), ("basic_shell", {"command": "dir"})):
+                       ("desktop_tidy", {}), ("basic_shell", {"command": "dir"})):
         assert gate.admit(tool, args, actions.SPECS[tool][1]).allow, tool
     assert gate.published == [] and gate.flush() == []
 

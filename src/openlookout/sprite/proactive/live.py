@@ -261,6 +261,87 @@ SETTLED_OFFER_STATES = frozenset({
     "acknowledged", "responded",
 })
 
+# 对话框「待回应」区用的更窄词表：只有用户真的做了决定（点头/拒绝/已执行）
+# 才算数；expired/ignored 只是「气泡消失时他没看见」，不是拒绝——错过气泡后
+# 在补点窗口内仍应能补点同意（issue #26，10-14 清理提议就是这样错过的）。
+DECIDED_OFFER_STATES = frozenset({
+    "started", "accepted", "rejected", "dismissed", "retracted",
+    "auto_started", "auto_completed", "auto_failed", "auto_no_answer",
+    "auto_errored", "undone", "undo_requested",
+})
+PENDING_LIST_MAX = 3
+
+
+def _offer_rows() -> list[dict]:
+    """读 offers.jsonl 全部行，坏行跳过（账本永不阻塞界面）。"""
+    path = DIR / "offers.jsonl"
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    rows = []
+    for line in lines:
+        try:
+            rows.append(json.loads(line))
+        except ValueError:
+            continue
+    return rows
+
+
+def pending_approval_offers(*, now: float | None = None,
+                            active_id: str | None = None,
+                            window_s: float | None = None) -> list[dict]:
+    """气泡错过后仍可补点「好的/不用」的未决提议（issue #26）。
+
+    两类来源：已落盘的风险批次（pending_batches.jsonl，含 items）和最近一条
+    普通 offer（offers.jsonl，无 items）。排除：超出补点窗口、已有决定
+    （DECIDED_OFFER_STATES）、正是当前在屏气泡。返回按时间升序、最多
+    PENDING_LIST_MAX 条；每条补齐 options，可直接交给对话框与 start_offer。
+    """
+    from vista.benchmarks.desktop import permissions
+
+    now = now if now is not None else time.time()
+    window = window_s if window_s is not None else permissions.load_policy().batch_window_s
+    latest: dict[str, str] = {}
+    for row in _offer_rows():
+        rid = row.get("id")
+        if rid:
+            latest[str(rid)] = str(row.get("result") or "")
+
+    def undecided(rid: str) -> bool:
+        return latest.get(str(rid)) not in DECIDED_OFFER_STATES
+
+    offers: list[dict] = []
+    seen: set[str] = set()
+    for batch in permissions.pending_batches():
+        bid = str(batch.get("id") or "")
+        if not bid or bid in seen or bid == active_id:
+            continue
+        try:
+            age = now - float(batch.get("t") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not 0 <= age <= window or not undecided(bid):
+            continue
+        offers.append(dict(batch, kind="offer", options=list(OFFER_OPTIONS)))
+        seen.add(bid)
+    # 普通 offer：倒序只取最近一条仍未决定、未过期的（对话框不该堆一屏旧账）。
+    for row in reversed(_offer_rows()):
+        rid = str(row.get("id") or "")
+        if not rid or rid in seen or rid == active_id:
+            continue
+        if str(row.get("kind") or "") != "offer" or row.get("items"):
+            continue
+        try:
+            age = now - float(row.get("t") or 0)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= age <= window and undecided(rid):
+            offers.append(dict(row, options=list(row.get("options") or OFFER_OPTIONS)))
+        break  # 只翻最近一条普通 offer：它已决定的话也不翻更老的旧账
+    offers.sort(key=lambda o: float(o.get("t") or 0))
+    return offers[-PENDING_LIST_MAX:]
+
 
 _LOG_FAILS = 0
 
@@ -681,6 +762,10 @@ def run_gui() -> None:
             w.hide(expired=False)
             if i == 0:
                 start_offer(offer)
+            else:
+                # 明确拒绝也落进 offers.jsonl：否则对话框的补点列表只认
+                # outcomes.jsonl、看不到这个决定，已拒绝的事会挂到补点窗口结束。
+                record_offer_result(offer, "rejected")
             return
         if ok:
             record_outcome(offer, "acknowledged")
@@ -711,6 +796,25 @@ def run_gui() -> None:
             threading.Thread(target=run_risk_batch, args=(offer, report), daemon=True).start()
             return
         threading.Thread(target=run_offer, args=(offer, report), daemon=True).start()
+
+    def decide_pending(offer: dict, approved: bool) -> None:
+        """对话框里对**错过的**提议补点（issue #26）。
+
+        执行链与气泡点头完全相同：好的 → start_offer（批次走 run_risk_batch、
+        清单冻结不放大），不用 → rejected 落账并让它离开补点列表。
+        late_consent=True 标明这是补点而不是当屏点头，供后续评测区分。
+        """
+        options = list(offer.get("options") or OFFER_OPTIONS)
+        if approved:
+            record_outcome(offer, "accepted", options=options, choice_index=0,
+                           choice=options[0] if options else None, late_consent=True)
+            start_offer(offer)
+        else:
+            record_outcome(offer, "rejected", options=options,
+                           choice_index=1,
+                           choice=options[1] if len(options) > 1 else None,
+                           late_consent=True)
+            record_offer_result(offer, "rejected")
 
     def on_expire() -> None:
         """气泡自己超时消失、用户全程没反应 —— 最常发生、也最该被记下来的情况。
@@ -800,7 +904,11 @@ def run_gui() -> None:
                 plan = f"\n下一步：{action}"
         status = f"我判断你现在在：{about}\n{state}{plan}" if about else "我还在看，还没有判断。"
         sx, sy = w.sx, w.sy
-        opened["dlg"] = ChatDialog(root, sx, sy, status, queue_message, conversation.history())
+        # 错过气泡的提议在这里补点（issue #26）；当前正在屏上的气泡不重复列。
+        pending = pending_approval_offers(active_id=offer_state.get("id"))
+        opened["dlg"] = ChatDialog(root, sx, sy, status, queue_message,
+                                   conversation.history(),
+                                   pending=pending, on_decide=decide_pending)
 
     press = {}
 

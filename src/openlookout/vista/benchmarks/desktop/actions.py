@@ -1067,6 +1067,59 @@ def _scan(env, limit: int | None = 20000):
                 yield Path(dp) / f
 
 
+def _recycle_roots() -> list:
+    """本机当前用户可访问的回收站目录（``C:\\$Recycle.Bin\\<SID>``）。
+
+    别的用户/服务 SID 目录 ACL 拒绝，``os.listdir`` 抛 PermissionError，
+    自然跳过；空目录（listdir 成功返回 []）仍保留——它确实是可读回收站。
+    非 Windows 没有回收站概念，返回空。
+    """
+    import os
+    if os.name != "nt":
+        return []
+    base = Path(os.environ.get("SystemDrive", "C:") + "/$Recycle.Bin")
+    try:
+        names = sorted(os.listdir(base))
+    except OSError:
+        return []
+    roots = []
+    for name in names:
+        sid_dir = base / name
+        try:
+            os.listdir(sid_dir)  # 可读性试探：无权限直接 PermissionError
+        except OSError:
+            continue
+        roots.append(sid_dir)
+    return roots
+
+
+def _recycle_targets(roots=None) -> list:
+    """回收站里的真实内容项。
+
+    Windows 回收站每个删除项是一对：``$I<name>`` 元数据 + ``$R<name>`` 真实
+    内容。只认 ``$R``（占空间的是它），配套 ``$I`` 成对带走。返回
+    ``(rpath, ipath_or_None, is_dir)`` 三元组列表。
+    """
+    import os
+    out: list[tuple] = []
+    for root in (roots if roots is not None else _recycle_roots()):
+        try:
+            names = sorted(os.listdir(root))
+        except OSError:
+            continue
+        for name in names:
+            if not name.startswith("$R"):
+                continue
+            rpath = root / name
+            ipath = root / ("$I" + name[2:])
+            try:
+                is_dir = rpath.is_dir()
+            except OSError:
+                continue
+            out.append((rpath, ipath if ipath.exists() else None, is_dir))
+    return out
+
+
 def restore_quarantine() -> str:
     """把隔离区里还收着的条目按还原映射放回原处（从不覆盖已存在的文件）。desktop_undo 调用。"""
     from sprite.quarantine import Quarantine
@@ -1086,48 +1139,87 @@ def _undo_cmd_quarantine() -> str:
     return f'"{sys.executable}" -c "{code}"'
 
 
-def reclaim(args: dict[str, Any], env=None, disk=None) -> ToolReply:
+def reclaim(args: dict[str, Any], env=None, disk=None, recycle=None) -> ToolReply:
     """腾磁盘空间：只动“可再生/有硬证据可还原”的，放进隔离区（可完整还原）。
 
     规矩和通用引擎一致：risk 判 safe 才动；medium/high 一律不碰；
         动手前逐个重新核对分类结果（状态变了就跳过）。磁盘危急时持续到安全候选耗尽，
         不把模型传入的批量数字当作完成条件。
+    回收站（当前用户 SID 的 $Recycle.Bin）与 temp/缓存同属安全可逆项：内容移入
+        隔离区而非永久删除，$I/$R 成对带走，desktop_undo 可还原回原位置。
     """
     from sprite.quarantine import Quarantine
     from sprite import risk as R
     requested_max = max(1, int(args.get("max_items", 40)))
     env = env or _real_env()
     disk = disk or disk_free_gb
+    targets_fn = recycle or _recycle_targets
     free_before = disk()
     exhaustive = 0 <= free_before <= 1.0 or bool(args.get("exhaustive"))
     q = Quarantine(HOME)
+    # 条目：("cache", p, rk) | ("recycle", rpath, ipath, is_dir)
     plan, ids, skipped, bytes_done = [], [], [], 0
+
+    def room() -> bool:
+        return exhaustive or len(plan) < requested_max
+
     for p in _scan(env, limit=None if exhaustive else requested_max):
-        if not exhaustive and len(plan) >= requested_max: break
+        if not room(): break
         try:
             if not p.is_file(): continue
             rk = R.classify_file(p, env)                 # 先取计划，动手前还会再核对一次
         except Exception:
             continue                                      # 读不到状态的连候选都不算
-        if rk.level == "safe" and rk.action == "quarantine": plan.append((p, rk))
+        if rk.level == "safe" and rk.action == "quarantine":
+            plan.append(("cache", p, rk))
+    # 缓存类安全项优先；名额还有余才动回收站（危急时全部查完）。
+    if room():
+        for rpath, ipath, is_dir in targets_fn():
+            if not room(): break
+            plan.append(("recycle", rpath, ipath, is_dir))
     if not plan:
-        return ToolReply("没有找到可以安全清理的东西（缓存/临时文件里都没有“可再生”的硬证据）。电脑没有被改动。")
-    _journal(dict(desc=f"清理 {len(plan)} 个可再生文件（隔离区，可还原）", undo_cmd=_undo_cmd_quarantine(), cwd=str(ROOT)))
-    for p, rk in plan:                                    # 先写撤回日志，再动手
+        return ToolReply("没有找到可以安全清理的东西（临时文件、缓存和回收站里都没有可收的项）。电脑没有被改动。")
+    recycle_planned = sum(1 for e in plan if e[0] == "recycle")
+    _journal(dict(desc=f"清理 {len(plan) - recycle_planned} 个可再生文件、{recycle_planned} 项回收站内容（隔离区，可还原）",
+                  undo_cmd=_undo_cmd_quarantine(), cwd=str(ROOT)))
+    recycle_done = 0
+    cache_done = 0
+    for entry in plan:                                    # 先写撤回日志，再动手
         try:
-            rk2 = R.classify_file(p, env)                 # 逐个重新核对：刚才的计划可能已经过期
-            if rk2.level != "safe" or rk2.action != "quarantine": skipped.append(p.name); continue
-            e = q.put(p, rk2.reason, regen=rk2.regenerable, copy=rk2.copy, now=env.now)
+            if entry[0] == "cache":
+                _, p, rk = entry
+                rk2 = R.classify_file(p, env)             # 逐个重新核对：刚才的计划可能已经过期
+                if rk2.level != "safe" or rk2.action != "quarantine":
+                    skipped.append(p.name); continue
+                e = q.put(p, rk2.reason, regen=rk2.regenerable, copy=rk2.copy, now=env.now)
+                cache_done += 1
+            else:
+                _, rpath, ipath, is_dir = entry
+                # 二次核对：用户可能刚从回收站恢复了它（路径消失），那就跳过。
+                if not (rpath.is_dir() if is_dir else rpath.is_file()):
+                    skipped.append(rpath.name); continue
+                reason = "回收站内容（已删除项，移入隔离区仍可还原）"
+                e = (q.put_dir(rpath, reason, regen=False, now=env.now) if is_dir
+                     else q.put(rpath, reason, regen=False, now=env.now))
+                recycle_done += 1
+                # 索引文件在真实内容收妥后再带；它失败不影响主项，也不单独计数汇报。
+                if ipath is not None:
+                    try:
+                        ei = q.put(ipath, reason + "（索引）", regen=False, now=env.now)
+                        ids.append(ei["id"]); bytes_done += ei["size"]
+                    except Exception:
+                        pass
             ids.append(e["id"]); bytes_done += e["size"]
         except Exception:
-            skipped.append(p.name)                        # 放不进隔离区就原样不动
+            skipped.append(str(entry[1].name))            # 放不进隔离区就原样不动
     free_after = disk()
     freed = round(max(0.0, free_after - free_before), 2)
-    text = (f"已把 {len(ids)} 个可再生文件收进隔离区（约 {bytes_done / 2 ** 20:.0f}MB；C 盘 {free_before}GB → "
-            f"{free_after}GB，实际腾出 {freed}GB）。全部可还原，用 desktop_undo 原样恢复。")
+    text = (f"已收进隔离区：{cache_done} 个临时/缓存文件、{recycle_done} 项回收站内容"
+            f"（约 {bytes_done / 2 ** 20:.0f}MB；C 盘 {free_before}GB → "
+            f"{free_after}GB，实际腾出 {freed}GB）。都不是永久删除，点撤销就能原样还原。")
     if skipped: text += f"另有 {len(skipped)} 个状态变了或放不进隔离区，没有动。"
     if exhaustive and free_after <= 1.0:
-        text += "安全候选已经查完，但空间仍然紧张；不确定的用户文件没有动，需要继续寻找其他可验证来源。"
+        text += "安全的来源已经查完，空间还是紧；不确定的用户文件我没有动。"
     return ToolReply(text)
 
 
@@ -1442,8 +1534,8 @@ SPECS = {
                     "properties": {key: {"type": "boolean"} for key in ("relevant", "complete", "legible", "focused")}},
          "reason": {"type": "string", "minLength": 1, "maxLength": 500}},
         ["id", "checks", "reason"], Capability.ANNOTATION, Effect.ANNOTATION)),
-    "desktop_reclaim": (reclaim, _spec("desktop_reclaim", "C 盘空间不够时主动清理：持续寻找并处理可再生/可还原的缓存、临时文件，直到空间恢复或安全候选耗尽。"
-                          "只动安全的项，发现证据不足的会跳过不动；每个文件重新核验并可用 desktop_undo 还原。危急磁盘时不要把 max_items 当作完成条件；exhaustive 可主动要求继续查完。",
+    "desktop_reclaim": (reclaim, _spec("desktop_reclaim", "C 盘空间不够时直接清理、不用先问：处理临时文件、浏览器/包缓存和回收站里的可还原项，全部移入隔离区（不是永久删除），完成后汇报腾出多少空间以及怎么还原。"
+                          "用户的文档、下载、桌面一律不碰，证据不足的项会跳过；每个文件动手前重新核验。危急磁盘时不要把 max_items 当作完成条件；exhaustive 可主动要求继续查完。",
                           RECLAIM_ARGS, [], Capability.ACTION, Effect.ENVIRONMENT)),
     "desktop_suspend": (suspend, _spec("desktop_suspend", "挂起一个进程（冻结，不结束）。改动前已写入撤销记录。",
                          {"pid": PID}, ["pid"], Capability.ACTION, Effect.ENVIRONMENT)),
