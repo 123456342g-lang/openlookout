@@ -12,7 +12,7 @@ from pathlib import Path
 
 import certifi
 
-from . import desktopfacts, memory, systemfacts, watching
+from . import coach, desktopfacts, memory, systemfacts, watching
 from .decision_engine import DecisionEngine
 from .agenda import Agenda
 
@@ -1376,23 +1376,116 @@ def build(cfg: dict, root: Path):
         return session, runtime, VisualDirectBackend(selected_cfg, runtime), "direct-fallback"
 
 
-def restore_guide(runtime) -> None:
-    """把上次保存的长期理解放回本次会话?GUIDE.md。"""
+def restore_guide(runtime, ledger=None) -> None:
+    """把上次保存的长期理解放回本次会话的 GUIDE.md。
+
+    ledger 给定时（隐性教练，issue #18）：拷回后重新剥离/合并教练围栏块——
+    模型上一轮的全量 write_guide 可能丢块，规范块以内存账本为准补回。
+    """
     if GUIDE.exists() and runtime.context.guide_path:
         shutil.copyfile(GUIDE, runtime.context.guide_path)
+        if ledger is not None:
+            guide_path = Path(runtime.context.guide_path)
+            guide_path.write_text(
+                coach.merge_block(guide_path.read_text(encoding="utf-8"), ledger),
+                encoding="utf-8")
     if WORKING.exists() and runtime.context.working_path:
         shutil.copyfile(WORKING, runtime.context.working_path)
 
 
-def save_guide(runtime) -> None:
+def save_guide(runtime, ledger=None) -> None:
     gp = runtime.context.guide_path
     if gp and Path(gp).exists():
         COMPANION.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(gp, GUIDE)
+        if ledger is None:
+            shutil.copyfile(gp, GUIDE)
+        else:
+            # 先剥离模型可能仿造/残留的教练块，再追加内存账本的规范块；
+            # 同一份合并文本写回会话文件与持久副本，块在任何覆盖下都不丢。
+            merged = coach.merge_block(Path(gp).read_text(encoding="utf-8"), ledger)
+            Path(gp).write_text(merged, encoding="utf-8")
+            GUIDE.write_text(merged, encoding="utf-8")
     wp = runtime.context.working_path
     if wp and Path(wp).exists():
         COMPANION.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(wp, WORKING)
+
+
+def load_coach_ledger() -> dict:
+    """从持久 GUIDE.md 的教练围栏块恢复账本；没有块就是空账本。"""
+    try:
+        if GUIDE.exists():
+            return coach.parse_block(GUIDE.read_text(encoding="utf-8")) or coach.new_ledger()
+    except OSError:
+        pass
+    return coach.new_ledger()
+
+
+_COACH_JSONL_CACHE: dict[str, dict] = {}
+
+
+def _cached_jsonl_rows(path: Path, cache: dict | None = None) -> list[dict]:
+    """mtime/size 缓存读 jsonl：文件没变就不重读（P2-5，文件会无限增长）。
+
+    stamp 用 (mtime_ns, size)：只追加不改写的账本在 size 不变时内容必然没变；
+    任何读取失败都退化成空表，缓存按路径隔离且不上锁，教练回流不能炸主循环。
+    """
+    key = str(path)
+    slot = cache if cache is not None else _COACH_JSONL_CACHE.setdefault(key, {})
+    try:
+        stat = path.stat()
+    except OSError:
+        slot.clear()
+        return []
+    stamp = (stat.st_mtime_ns, stat.st_size)
+    if stamp == slot.get("stamp"):
+        return slot.get("rows", [])
+    rows = _rows(path)
+    slot["stamp"], slot["rows"] = stamp, rows
+    return rows
+
+
+def _published_coach_offers(path: Path | None = None) -> set:
+    """实际发布上屏的气泡键集合 {(topic, t)}（offers.jsonl 的 result=shown 行）。
+
+    被 help 层判重抑制的决策没有 shown 行（session.py:200-216 的发布点不查
+    账本，本进程不能改它），用这个键在事后区分「真上屏」与「没上屏」：没上屏
+    的 coach 决策不得 mark_spoken（P2-4）。
+    """
+    path = path or OFFERS
+    return {coach.published_key(row.get("topic"), row.get("t"))
+            for row in _cached_jsonl_rows(path)
+            if row.get("result") == "shown"}
+
+
+def sync_coach(ledger, session, *, seen_decisions: int, now: float,
+               surface: bool, outcomes_path: Path | None = None,
+               offers_path: Path | None = None, new_stay: bool = False) -> int:
+    """每轮 companion 决策后调用：topic 约定 → 确定性账本迁移 + outcomes 回流。
+
+    接线刻意薄：模型判断「这件事算不算某模式的证据」与教练话措辞；状态迁移
+    全部在 coach.py 的纯函数里。surface 是本轮是否处在允许教练开口的时刻
+    （断点/等待；非流中、非离开、非回话轮），由主循环的时机信号算出。
+    new_stay 表示观察到「人已离开」：上一次停留结束，清除段内开口抑制。
+    发布核验用 offers.jsonl 的 shown 行（两侧同一 coach.published_key
+    规范化，避免带空白 topic 误判），outcomes/offers 都按 mtime/size
+    缓存，避免每轮 O(n) 全量扫。返回已消费到的 decisions 下标。
+    """
+    if new_stay:
+        coach.reset_stay(ledger)
+    decisions = list(getattr(session, "decisions", [])[seen_decisions:])
+    published = _published_coach_offers(offers_path)
+    for row in coach.apply_decisions(ledger, decisions, now,
+                                     surface=surface, published=published):
+        print(f"[brain] coach 违规开口被工程闸拦下（不迁移状态）：{row['id']} {row['reason']}", flush=True)
+    path = outcomes_path or (PERCEIVE / "outcomes.jsonl")
+    for row in _cached_jsonl_rows(path):
+        state = coach.apply_outcome(
+            ledger, event_id=row.get("id"), topic=row.get("topic"),
+            outcome=row.get("outcome"), now=_event_time(row.get("t")) or now)
+        if state:
+            print(f"[brain] coach outcome {row.get('topic')} -> {state} ({row.get('outcome')})", flush=True)
+    return len(getattr(session, "decisions", []))
 
 
 def save_current(session) -> None:
@@ -1454,7 +1547,10 @@ def run() -> None:
         backend.live_screen = live_screen
         backend.screen_sample = live_screen.latest()
         backend.screen_revision = backend.screen_sample.revision
-    restore_guide(runtime)
+    # 隐性教练账本（issue #18）：从 GUIDE.md 围栏块恢复，会话期间由确定性
+    # 代码维护，save_guide 时剥离/合并，模型全量 write_guide 也不丢块。
+    coach_ledger = load_coach_ledger()
+    restore_guide(runtime, coach_ledger)
     reset_current()
     reader = watching.load(COMPANION)
     sysw = systemfacts.load(COMPANION)
@@ -1479,7 +1575,11 @@ def run() -> None:
         observation=session.observe(backend.screen_sample.visual) if live_screen is not None else None))
     if not isinstance(backend, VisualDirectBackend) and initial_result.boundary is not None:
         agenda.mark_delivered(initial_revision)
-    save_guide(runtime)
+    # 初始轮是建立上下文，不是操作流断点：教练开口闸关闭（quiet 记实例/退休
+    # 信号照常回流），防止「一启动就说教」。
+    coach_seen = sync_coach(coach_ledger, session, seen_decisions=0,
+                            now=time.time(), surface=False)
+    save_guide(runtime, coach_ledger)
     save_current(session)
     if initial_result.boundary is not None:
         maintenance.consume()
@@ -1529,9 +1629,11 @@ def run() -> None:
             turn_gap_s = now - last_turn
             heartbeat_due = heartbeat_is_due(now, last_turn)   # 兜底，不是主触发；以轮末为基准
             timing_due, timing_why = False, ""
+            timing_moment = None       # 教练开口时刻闸用：fire=断点，detail.busy=流中
             if tt is not None:
                 try:
                     mo = tt.consider(ops_events(now=now), now)
+                    timing_moment = mo
                     if mo.fire:
                         # 把触发的具体对象」一并交给模型，否则它只能泛泛谈（见 GUIDE.md「别做指标触发）
                         try:
@@ -1692,6 +1794,18 @@ def run() -> None:
                      "if a concrete reversible action would help, offer it. Otherwise choose quiet. "
                      "Do not invent a topic, weather update, or generic activity report.")
             text += "\n" + agenda.context()
+            # 隐性教练时刻闸（issue #18）：教练话只允许出现在行为事件边界
+            # （timing fire 已过 settle）或人在但停手的等待时刻；操作流中、
+            # 离开、回话轮一律不把教练段送进提示词——红线上就没有开口路径。
+            coach_away = idle_s >= watching.DEFAULTS["away_s"]
+            coach_busy = bool((timing_moment.detail or {}).get("busy")) if timing_moment is not None else False
+            coach_gate = {"boundary": timing_due,
+                          "settled": bool(heartbeat_due) and not coach_away and idle_s >= coach.WAIT_IDLE_S,
+                          "in_flow": coach_busy and not timing_due,
+                          "away": coach_away, "reply_pending": reply_pending}
+            coach_text = coach.surface_note(coach_ledger, now, **coach_gate)
+            if coach_text:
+                text += "\n" + coach_text
             # 无图轮：不消费画面 revision——这一帧没送进模型，
             # _refresh_screen/下一轮仍会把它作为新 CURRENT 送达；
             # feedback_since 每次都刷（文字反馈本轮确实已附上）。
@@ -1725,13 +1839,19 @@ def run() -> None:
                 last_thumb = backend.screen_sample.thumbnail
             if r.boundary is not None:
                 maintenance.consume()
-            save_guide(runtime)
+            # 决策回流：coach topic 约定做确定性迁移，outcomes.jsonl 回流采纳/
+            # 拒绝/超时；随后合并围栏块并持久化（先迁移后存盘，块与账本一致）。
+            coach_seen = sync_coach(coach_ledger, session, seen_decisions=coach_seen,
+                                    now=last_turn,
+                                    surface=coach.surface_allowed(**coach_gate)[0],
+                                    new_stay=coach_gate["away"])
+            save_guide(runtime, coach_ledger)
             save_current(session)
             print(f"[brain] turn done boundary={r.boundary} decisions={len(session.decisions)}", flush=True)
     finally:
         if live_screen is not None:
             live_screen.close()
-        save_guide(runtime)
+        save_guide(runtime, coach_ledger)
         watching.save(reader, HOME)
         systemfacts.save(sysw, HOME)
         runtime.close()
