@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 import shutil
 import os
 import queue
@@ -16,7 +17,8 @@ import tempfile
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from collections.abc import Collection
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -42,13 +44,42 @@ from vista.core.timeouts import (
 
 PLAYER_IMAGE = "arc3-claude-player:0.1"
 CONTAINER_CLAUDE_BIN = "/opt/claude/claude"
-# 宿主机模式下放开的内建工具。容器模式不放开（--tools ""），所以模型只能调 mcp__game__*，
-# 也就永远无法自己下载一个工具、读一个老格式文档、跑一次命令来把问题解决掉。
-HOST_BUILTIN_TOOLS = "Bash,Read,Write,Edit,MultiEdit,Glob,Grep,WebFetch,WebSearch,TodoWrite"
-# 宿主机模式没有容器兜底，且是无人值守的非交互运行：default 档会把所有动作都拒掉，
-# 所以只能 bypass。放开的内建工具 + bypass = 模型可以用这台机器上的任何命令。
-# 这是「最大化主动解决问题能力」与「最小权限」之间的取舍，取前者，代价记在此处不隐藏。
-HOST_PERMISSION_MODE = "bypassPermissions"
+# ── 宿主机模式工具/权限收口（issue #13 PR1）──────────────────────────────────
+# 宿主机模式没有 Docker 沙箱。生产默认（未设置或空串）**一个** Claude 原生内建
+# 工具都不放开：``--tools ""`` 禁用全部内建工具，模型只能触达已注册、经风险门与
+# 撤销台账约束的 mcp__game__* MCP 工具。原生 Edit/Write/MultiEdit/Bash 绝不允许
+# 出现在无人值守生产命令行里。
+#
+# 唯一例外是显式本地开发：本机环境设置非空的
+# OPENLOOKOUT_CLAUDE_BUILTIN_TOOLS="Read,Glob,..." 才透传。无人值守环境放开
+# 这些工具 = 模型可直接改本机任意文件/执行任意命令，禁止在生产（含常驻 brain 的
+# 运行环境与普通 run_offer）设置。
+ENV_HOST_BUILTIN_TOOLS = "OPENLOOKOUT_CLAUDE_BUILTIN_TOOLS"
+HOST_BUILTIN_TOOLS = ""
+# 原生工具里具备直接写盘/执行能力的集合；命令行红线测试按这个集合断言。
+NATIVE_UNSAFE_BUILTIN_TOOLS = frozenset({"Bash", "Edit", "Write", "MultiEdit"})
+# 宿主机模式与容器模式一致，固定 default：--allowedTools 白名单之外的工具在
+# ``-p`` 无人值守下会被自动拒绝。永不使用无约束 bypassPermissions。
+HOST_PERMISSION_MODE = "default"
+# 无人值守一次性任务（run_offer→cli）的 MCP 工具只允许 desktop_* 前缀的已注册
+# 工具；companion / basic_* / inspect 等在该路径一律不可见。
+HOST_MCP_ALLOWLIST_PREFIX = "desktop_"
+_BUILTIN_TOOL_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+_DESKTOP_TOOL_NAME_RE = re.compile(r"^desktop_[a-z0-9_]+$")
+# 本机 ``~/.claude/settings.json`` 的 env 块只允许把这些键搬进 claude 子进程
+# （review P2-1）：端点、凭据、模型档。其余键——尤其任何权限/开关类
+# CLAUDE_CODE_* 行为变量——一律丢弃，避免 settings 静默改变无人值守运行的
+# 授权形态。别名档统一走 ANTHROPIC_DEFAULT_ 前缀。
+HOST_SETTINGS_ENV_ALLOWED = frozenset(
+    {
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_MODEL",
+        "ANTHROPIC_SMALL_FAST_MODEL",
+    }
+)
+HOST_SETTINGS_ENV_PREFIXES = ("ANTHROPIC_DEFAULT_",)
 CONTAINER_MCP_BRIDGE = "/opt/arc3/claude_mcp_bridge.py"
 CONTAINER_COMPACT_HOOK = "/opt/arc3/claude_compact_hook.py"
 PINNED_CLAUDE_VERSION = "2.1.220"
@@ -268,9 +299,12 @@ def host_passthrough_environment(
 ) -> dict[str, str]:
     """宿主机供应商透传环境（host_mode + LOCAL_HOST_PROVIDER 专用）。
 
-    VISTA 不再持有任何凭据：claude 子进程继承当前进程环境，并叠加本机
-    ``~/.claude/settings.json`` 的 ``env`` 块（ANTHROPIC_BASE_URL /
-    ANTHROPIC_AUTH_TOKEN / ANTHROPIC_DEFAULT_*_MODEL 别名档）。
+    VISTA 不持有凭据：claude 子进程继承当前进程环境，并叠加本机
+    ``~/.claude/settings.json`` 的 ``env`` 块——但只搬运
+    HOST_SETTINGS_ENV_ALLOWED / HOST_SETTINGS_ENV_PREFIXES 白名单内的
+    供应商键（ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN /
+    ANTHROPIC_DEFAULT_*_MODEL 别名档等，review P2-1）。settings 里的其他键
+    （权限开关、未来任何 CLAUDE_CODE_* 行为变量）不得静默进入无人值守进程。
     注意 CLAUDE_CONFIG_DIR 在宿主机模式下指向项目隔离目录，settings 文件
     本身不会被 claude 读取，所以 env 块必须在这里显式搬过去。
     """
@@ -282,11 +316,18 @@ def host_passthrough_environment(
         block = data.get("env")
         if isinstance(block, dict):
             for name, value in block.items():
-                if isinstance(name, str) and isinstance(value, str):
+                if not isinstance(name, str) or not isinstance(value, str):
+                    continue
+                if name in HOST_SETTINGS_ENV_ALLOWED or name.startswith(
+                    HOST_SETTINGS_ENV_PREFIXES
+                ):
                     child[name] = value
     except (OSError, ValueError):
         # 读不到本机配置时保持继承环境不变：由调用方/用户自行保证可用。
         pass
+    # 我们自己的原生工具开关只该由本进程的显式构造决定（cli/brain 传参），
+    # 绝不漏进 claude 二进制子进程，避免未来任何路径把它当配置消费。
+    child.pop(ENV_HOST_BUILTIN_TOOLS, None)
     return child
 
 
@@ -332,6 +373,62 @@ def create_short_socket_dir(segment: int) -> Path:
     return directory
 
 
+def resolve_host_builtin_tools(explicit: str | None) -> list[str]:
+    """Resolve the host-mode native-tool allow list (issue #13 PR1).
+
+    ``None`` means "take the explicit local-dev environment value"; an empty
+    string (brain passes one deliberately) means "locked even when the
+    environment is polluted".  Unset/empty resolves to no native tools at all.
+    Every token must be a plain PascalCase tool name, so neither CLI flags nor
+    ``mcp__*`` permission rules can be smuggled through the env value.
+    """
+
+    raw = os.environ.get(ENV_HOST_BUILTIN_TOOLS, "") if explicit is None else explicit
+    names: list[str] = []
+    for token in str(raw or "").split(","):
+        name = token.strip()
+        if not name:
+            continue
+        if not _BUILTIN_TOOL_NAME_RE.fullmatch(name) or name.startswith("mcp__"):
+            raise ValueError(
+                f"{ENV_HOST_BUILTIN_TOOLS} contains an invalid tool name {name!r}; "
+                "use a comma-separated list of Claude Code built-in tool names only."
+            )
+        if name not in names:
+            names.append(name)
+    return names
+
+
+def normalize_host_mcp_allowlist(
+    allowlist: "Collection[str] | None",
+    *,
+    registered: "Collection[str] | None",
+) -> "frozenset[str] | None":
+    """Validate the unattended host MCP allow list.
+
+    Only registered ``desktop_*`` tools are admissible: the prefix rule blocks
+    ``companion``/``basic_shell``/``inspect`` style names and the membership
+    rule fails closed on typos and drift.
+    """
+
+    if allowlist is None:
+        return None
+    names = {str(name).strip() for name in allowlist}
+    if not names or any(not _DESKTOP_TOOL_NAME_RE.fullmatch(name) for name in names):
+        raise ValueError(
+            "host_mcp_allowlist must contain only non-empty registered "
+            f"{HOST_MCP_ALLOWLIST_PREFIX}* tool names."
+        )
+    if registered is not None:
+        unknown = names - set(registered)
+        if unknown:
+            raise ValueError(
+                "host_mcp_allowlist names are not registered MCP tools: "
+                + ", ".join(sorted(unknown))
+            )
+    return frozenset(names)
+
+
 class ClaudeCodeRunner:
     def __init__(
         self,
@@ -349,7 +446,16 @@ class ClaudeCodeRunner:
         task_timeout: int = 3600,
         image: str = PLAYER_IMAGE,
         host_mode: bool = False,
-        host_builtin_tools: str = HOST_BUILTIN_TOOLS,
+        # ``None`` (default): native tools stay disabled unless the explicit
+        # local-dev env var OPENLOOKOUT_CLAUDE_BUILTIN_TOOLS is set.  Callers
+        # that want the production lock regardless of the environment pass ""
+        # explicitly (the resident brain does this).
+        host_builtin_tools: str | None = None,
+        # Unattended one-shot host runs (run_offer→cli) pass the registered
+        # desktop_* tool names; the advertised MCP surface and --allowedTools
+        # are then restricted to exactly that set.  ``None`` keeps the whole
+        # registered MCP surface (the resident brain needs it).
+        host_mcp_allowlist: Collection[str] | None = None,
         display_size: int = 512,
         auto_compact_window: int | None = CLAUDE_AUTO_COMPACT_WINDOW,
         auto_compact_percent: int | None = CLAUDE_AUTO_COMPACT_PERCENT,
@@ -470,19 +576,51 @@ class ClaudeCodeRunner:
             raise ValueError("The decision lease timeout must be positive.")
         self.decision_lease_timeout = decision_lease_timeout
         self.image = image
-        # Host mode removes the Docker sandbox and is therefore unsafe by
-        # construction (it can expose arbitrary files/commands).  Keep the
-        # legacy knob for compatibility, but never enable it accidentally:
-        # callers must make the dangerous choice explicit in the environment.
-        # Normal OpenLookout operation uses Docker + authenticated MCP.
+        # Host mode removes the Docker sandbox.  It stays usable for the
+        # desktop product because the command line now defaults to native-tool
+        # lockdown (--tools "", default permissions, desktop_* MCP allowlist),
+        # but the explicit acknowledgement remains so callers cannot select
+        # host mode by accident.
         if host_mode and os.environ.get("OPENLOOKOUT_ALLOW_UNSAFE_HOST_MODE") != "1":
             raise ValueError(
                 "host_mode=True is disabled: use the Docker Claude backend and "
                 "authenticated MCP tools; set OPENLOOKOUT_ALLOW_UNSAFE_HOST_MODE=1 "
-                "only for an explicitly isolated test."
+                "only for an explicitly isolated run."
             )
+        if host_mcp_allowlist is not None and not host_mode:
+            raise ValueError("host_mcp_allowlist only applies to host_mode=True.")
         self.host_mode = bool(host_mode)
-        self.host_builtin_tools = str(host_builtin_tools or "")
+        if self.host_mode:
+            # 原生工具开关只对宿主机路径有意义（容器命令行硬编码 --tools ""）。
+            # 非法 env 值只允许在 host 构造时失败：不能让一个给本地开发用的
+            # 变量误伤 Docker（非 host）构造（review P2-2）。
+            self.host_builtin_tools = resolve_host_builtin_tools(host_builtin_tools)
+        else:
+            self.host_builtin_tools = []
+        registered_mcp_tools = (
+            {tool["name"] for tool in tool_interface.definitions}
+            if tool_interface is not None
+            else None
+        )
+        self.host_mcp_allowlist = (
+            normalize_host_mcp_allowlist(
+                host_mcp_allowlist, registered=registered_mcp_tools
+            )
+            if self.host_mode
+            else None
+        )
+        if self.host_mode:
+            unlocked_native = set(self.host_builtin_tools) & NATIVE_UNSAFE_BUILTIN_TOOLS
+            if unlocked_native:
+                # The env value is the explicit local-dev escape hatch.  Make the
+                # risk visible in the process log of every such run.
+                print(
+                    "[claude-host] WARNING: explicit local-dev native tools enabled "
+                    f"({', '.join(sorted(unlocked_native))}); the process can edit "
+                    "files and run commands outside every VISTA gate. Never set "
+                    f"{ENV_HOST_BUILTIN_TOOLS} for unattended production runs.",
+                    flush=True,
+                )
         self.display_size = display_size
         if (auto_compact_window is None) != (auto_compact_percent is None):
             raise ValueError("Both auto-compact settings must be provided together.")
@@ -546,6 +684,9 @@ class ClaudeCodeRunner:
         if self.host_mode:
             # 容器里这些是靠 docker run -e 传的；宿主机模式只能进 Popen 的 env。
             env = {**env, **self._host_environment()}
+            # 与 host_passthrough_environment 同理：我们的原生工具开关属于
+            # 本进程构造期决策，不进 claude 二进制子进程（review P2-1 纵深防御）。
+            env.pop(ENV_HOST_BUILTIN_TOOLS, None)
         return env
 
     def _host_environment(self) -> dict[str, str]:
@@ -672,6 +813,52 @@ class ClaudeCodeRunner:
     def _mcp_tool_definitions(self) -> list[dict[str, Any]]:
         return self._tool_definitions()
 
+    def _host_tool_interface(self) -> ToolInterface | None:
+        """The tool interface the host MCP bridge advertises in host mode.
+
+        With ``host_mcp_allowlist`` (run_offer→cli unattended path) the bridge
+        only lists the registered desktop_* tools: companion/basic_*/inspect
+        are invisible to the child process.  This is enforced twice: tools/list
+        serves this filtered face, and tools/call rejects any name outside it
+        server-side (``ClaudeGameMcpHost._advertised_tool_names``), so a client
+        that ignores the --allowedTools boundary still cannot reach a hidden
+        tool through the dispatcher (issue #13 PR1, review P1-2).
+        """
+        if (
+            not self.host_mode
+            or self.host_mcp_allowlist is None
+            or self.tool_interface is None
+        ):
+            return self.tool_interface
+        filtered = tuple(
+            definition
+            for definition in self.tool_interface.definitions
+            if definition.get("name") in self.host_mcp_allowlist
+        )
+        if not filtered:
+            raise RuntimeError(
+                "host MCP allowlist matched no registered tool; refusing to "
+                "start a native Claude process without any gated MCP tool."
+            )
+        return replace(self.tool_interface, definitions=filtered)
+
+    def _host_visible_tool_definitions(self) -> list[dict[str, Any]]:
+        interface = self._host_tool_interface()
+        if interface is not None:
+            return list(interface.definitions)
+        definitions = [
+            definition
+            for definition in self._mcp_tool_definitions()
+            if self.host_mcp_allowlist is None
+            or definition.get("name") in self.host_mcp_allowlist
+        ]
+        if self.host_mcp_allowlist is not None and not definitions:
+            raise RuntimeError(
+                "host MCP allowlist matched no registered tool; refusing to "
+                "build a native Claude command without any gated MCP tool."
+            )
+        return definitions
+
     def _next_segment(self) -> int:
         segment = self._segment_index
         self._segment_index += 1
@@ -757,9 +944,9 @@ class ClaudeCodeRunner:
             image_compact_at=CLAUDE_PROVIDER_IMAGE_COMPACT_AT,
             include_compact_checkpoint=False,
             reset_requires_retry_state=(self.controller.reset_starts_fresh_session),
-            tool_interface=self.tool_interface,
+            tool_interface=self._host_tool_interface(),
             native_compaction=self.native_compaction,
-            tool_definitions=self._mcp_tool_definitions(),
+            tool_definitions=self._host_visible_tool_definitions(),
         )
         process: subprocess.Popen[str] | None = None
         stream_queue: queue.Queue[tuple[str, str] | object] = queue.Queue()
@@ -870,7 +1057,14 @@ class ClaudeCodeRunner:
                 sanitized_init,
                 display_size=self.display_size,
                 allow_slash_commands=not disable_slash_commands,
-                tool_definitions=self._tool_definitions(),
+                tool_definitions=(
+                    self._host_visible_tool_definitions()
+                    if self.host_mode
+                    else self._tool_definitions()
+                ),
+                host_allowed_builtin_tools=(
+                    self.host_builtin_tools if self.host_mode else None
+                ),
             )
             # Host-native mode uses the configured provider's Claude alias
             # (e.g. ``sonnet``) and lets the gateway route it.  The init
@@ -1439,17 +1633,24 @@ class ClaudeCodeRunner:
         resume: bool,
         disable_slash_commands: bool = True,
     ) -> list[str]:
-        """宿主机模式：直接跑本机 claude，并放开内建工具。
+        """宿主机模式：直接跑本机 claude，但默认锁死在受控工具面内。
 
-        与 _docker_command 的差别就只有「没有 docker 那层」：不再有
-        --network bridge / --read-only / --cap-drop ALL / --pids-limit /
-        --memory，也不再挂载 /claude-io、/claude-config、/run/arc3-game
-        这些容器路径 —— 全部改成本机绝对路径。因此 claude 能读写这台机器上
-        的任何文件、跑任何命令、装任何东西。这是有意的取舍。
+        与 _docker_command 的差别只有「没有 docker 那层」隔离；工具面必须保持
+        与容器路径等价的收口（issue #13 PR1）：
+
+        * ``--tools ""`` 禁用全部 Claude 原生内建工具；仅当显式本地开发 env
+          OPENLOOKOUT_CLAUDE_BUILTIN_TOOLS 非空时才透传对应名单；
+        * ``--allowedTools`` 只列已注册 MCP 工具（run_offer→cli 路径进一步
+          收敛为 desktop_* 白名单）+ 显式放开的内建工具；
+        * ``--permission-mode default``：白名单之外的工具在无人值守 ``-p``
+          下一律自动拒绝，任何配置都不产生 bypassPermissions。
         """
-        builtins = [t for t in self.host_builtin_tools.split(",") if t]
+        builtins = list(self.host_builtin_tools)
         allowed_tools = ",".join(
-            [f"mcp__game__{tool['name']}" for tool in self._tool_definitions()]
+            [
+                f"mcp__game__{tool['name']}"
+                for tool in self._host_visible_tool_definitions()
+            ]
             + builtins
         )
         # local provider：模型档交给本机供应商的别名解析（--model opus 经
@@ -1486,7 +1687,7 @@ class ClaudeCodeRunner:
             str(mcp_config_path),
             "--strict-mcp-config",
             "--tools",
-            self.host_builtin_tools,
+            ",".join(builtins),
             "--allowedTools",
             allowed_tools,
             "--permission-mode",
@@ -1658,6 +1859,7 @@ def validate_instruction_envelope(
     display_size: int,
     allow_slash_commands: bool = False,
     tool_definitions: list[dict[str, Any]] | None = None,
+    host_allowed_builtin_tools: Collection[str] | None = None,
 ) -> None:
     if not isinstance(envelope, dict):
         raise RuntimeError("Claude Code emitted no initialization envelope.")
@@ -1666,18 +1868,37 @@ def validate_instruction_envelope(
     expected_tools = {f"mcp__game__{tool['name']}" for tool in tool_definitions}
     actual_tools = envelope.get("tools")
     host_mode = bool(envelope.get("_openlookout_host_mode"))
-    if (
-        not isinstance(actual_tools, list)
-        or (not expected_tools.issubset(set(actual_tools)) if host_mode else
-            len(actual_tools) != len(expected_tools) or set(actual_tools) != expected_tools)
-    ):
+    if not isinstance(actual_tools, list):
+        raise RuntimeError("Claude runtime did not expose the expected tool surface.")
+    actual_set = set(actual_tools)
+    if host_mode:
+        # issue #13 PR1 review P2-3：host 路径不再接受 subset。
+        # * 生产默认形态（无显式原生工具，run_offer 与常驻 brain 都是这个形态）：
+        #   信封工具集必须与本次广告面**精确相等**——未来某版 claude 若让
+        #   --tools "" 失效、多广告出任何原生工具，会在这里直接失败。
+        # * 显式本地开发形态（OPENLOOKOUT_CLAUDE_BUILTIN_TOOLS 非空，经调用方
+        #   显式选择）：允许广告额外的原生工具，但额外名字必须恰好是本次放开的
+        #   builtins 名单；任何别的 MCP 工具/未声明名字仍拒绝。
+        missing = expected_tools - actual_set
+        extra = actual_set - expected_tools
+        allowed_builtins = set(host_allowed_builtin_tools or ())
+        # 无显式原生工具（生产形态）：任何额外名字都不允许；开发形态：
+        # 额外名字必须恰好落在本次显式放开的 builtins 名单内。
+        unexpected = extra if not allowed_builtins else extra - allowed_builtins
+        if missing or unexpected:
+            raise RuntimeError(
+                "Claude runtime did not expose the expected tool surface."
+            )
+    elif len(actual_tools) != len(expected_tools) or actual_set != expected_tools:
         raise RuntimeError("Claude runtime did not expose the expected tool surface.")
     for key in ("skills", "plugins"):
         if not host_mode and envelope.get(key) != []:
             raise RuntimeError(f"Claude runtime exposed unexpected {key}.")
     if not allow_slash_commands and envelope.get("slash_commands") != []:
         raise RuntimeError("Claude runtime exposed unexpected slash_commands.")
-    if not host_mode and envelope.get("permissionMode") != CLAUDE_PERMISSION_MODE:
+    # host 模式同样强制 default（issue #13 PR1）：init 信封必须如实报告，
+    # 任何旁路（外部 settings/别名）重新打开 bypassPermissions 都会在这里炸掉。
+    if envelope.get("permissionMode") != CLAUDE_PERMISSION_MODE:
         raise RuntimeError("Claude runtime used an unexpected permission mode.")
     if not host_mode and envelope.get("claude_code_version") != PINNED_CLAUDE_VERSION:
         raise RuntimeError("Claude runtime used an unexpected Claude Code version.")

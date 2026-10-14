@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from pathlib import Path
 from typing import Any
 
@@ -39,7 +39,15 @@ def create_backend(
     auto_compact_window: int | None = None,
     max_output_tokens: int | None = None,
     host_mode: bool = False,
+    # Native Claude tools stay disabled in host mode unless the caller passes
+    # an explicit list; ``None`` leaves the runner on its production default
+    # (env OPENLOOKOUT_CLAUDE_BUILTIN_TOOLS, unset/empty = all disabled).
     host_builtin_tools: str | None = None,
+    # Unattended host runs pass the registered desktop_* tool names so the
+    # advertised MCP surface and --allowedTools are restricted to the gated
+    # tool family.  ``None`` keeps the full registered MCP surface (resident
+    # brain path).  Only ``desktop_*`` names are accepted.
+    host_mcp_allowlist: Collection[str] | None = None,
 ) -> BackendSession:
     from vista.backends.claude.runner import (
         CLAUDE_AUTO_COMPACT_PERCENT,
@@ -93,7 +101,11 @@ def create_backend(
         max_output_tokens=max_output_tokens,
         **({"image": image} if image is not None else {}),
         host_mode=host_mode,
-        **({"host_builtin_tools": host_builtin_tools} if host_builtin_tools else {}),
+        # Forward explicit values including "" (brain deliberately passes ""
+        # to beat a polluted environment); None lets the runner apply its
+        # production default (native tools disabled).
+        **({"host_builtin_tools": host_builtin_tools} if host_builtin_tools is not None else {}),
+        **({"host_mcp_allowlist": tuple(host_mcp_allowlist)} if host_mcp_allowlist is not None else {}),
     )
 
     def confirm_model() -> None:

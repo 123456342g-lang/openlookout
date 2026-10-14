@@ -13,7 +13,16 @@ HOME = Path(os.environ.get("SPRITE_HOME", r"E:\OpenLookout\sprite_home"))
 
 
 def main(argv=None) -> None:
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(
+        epilog=(
+            "安全默认（issue #13 PR1）：宿主机模式只放行已注册的 desktop_* MCP 工具"
+            "（经风险门与撤销台账），Claude 原生 Edit/Write/MultiEdit/Bash 全禁，"
+            "且不使用 bypassPermissions。本入口（含普通 run_offer 无人值守任务）"
+            "不接受任何原生工具开关：即使设置了环境变量 "
+            "OPENLOOKOUT_CLAUDE_BUILTIN_TOOLS 也会被忽略；该变量只对常驻 brain 的"
+            "本地开发运行生效。"
+        )
+    )
     ap.add_argument("--objective", required=True)
     ap.add_argument("--binary", type=Path, default=None, help="host claude binary (default: PATH lookup, then the pinned Linux build)")
     ap.add_argument("--directory", type=Path, default=None, help="new run directory (default: a timestamped one)")
@@ -43,10 +52,23 @@ def main(argv=None) -> None:
         if os.environ.get("OPENLOOKOUT_DIRECT_ONLY") == "1":
             from vista.benchmarks.desktop.brain import VisualDirectBackend
             return VisualDirectBackend(cfg, runtime)
+        # 无人值守收口（issue #13 PR1）：普通 run_offer 起的一次性任务只允许
+        # 已注册的 desktop_* MCP 工具（DesktopSession 风险门 + 撤销台账），
+        # companion/basic_*/inspect 在子进程里不可见；原生 Edit/Write/MultiEdit/
+        # Bash 必须无条件全禁。
+        # 显式传 ""（而不是依赖 runner 默认）：cli 子进程继承常驻 brain 环境，
+        # 本机一旦为本地开发 setx 过 OPENLOOKOUT_CLAUDE_BUILTIN_TOOLS，None 会
+        # 读到该值并经命令行隐式重开原生工具（review P1-1，实测 default 模式
+        # -p 下 --tools 已启用的工具不询问直接执行）；空串实参压过一切环境值。
+        desktop_tools = frozenset(
+            spec.name for spec in runtime.specs if spec.name.startswith("desktop_")
+        )
         return create_backend(
             runtime, directory=directory, oauth_token=None, binary=a.binary, image=PLAYER_IMAGE,
             provider=LOCAL_HOST_PROVIDER, provider_credential=None, provider_base_url=None,
             max_output_tokens=2048, ca_bundle=Path(certifi.where()), host_mode=True,
+            host_builtin_tools="",
+            host_mcp_allowlist=desktop_tools,
         )
 
     objective = a.objective + ("（只读：不要挂起、结束或移动任何东西。）" if a.read_only else "")
