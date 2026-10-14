@@ -150,9 +150,60 @@ def test_build_selects_deepseek_flash_without_rewriting_provider(monkeypatch, tm
 def test_configured_claude_provider_receives_deepseek_model():
     from vista.backends.claude.provider import MIMO_PROVIDER, provider_environment
 
-    env = provider_environment(MIMO_PROVIDER, credential="synthetic", 
+    env = provider_environment(MIMO_PROVIDER, credential="synthetic",
                                 model="deepseek-v4.1-flash", effort="low",
                                 base_url="https://provider.invalid/anthropic")
     assert env["ANTHROPIC_MODEL"] == "deepseek-v4.1-flash"
     assert env["ANTHROPIC_BASE_URL"] == "https://provider.invalid/anthropic"
     assert env["ANTHROPIC_AUTH_TOKEN"] == "synthetic"
+
+
+def test_backend_kind_defaults_to_host(monkeypatch):
+    monkeypatch.delenv("OPENLOOKOUT_BACKEND", raising=False)
+    assert brain.backend_kind() not in brain.BACKEND_DIRECT_VALUES
+    assert brain.backend_kind({"OPENLOOKOUT_BACKEND": "host"}) not in brain.BACKEND_DIRECT_VALUES
+
+
+def test_backend_kind_accepts_direct_aliases():
+    for value in ("direct", "MIMO", "1", " true ", "yes"):
+        kind = brain.backend_kind({"OPENLOOKOUT_BACKEND": value})
+        assert kind in brain.BACKEND_DIRECT_VALUES, value
+
+
+def test_build_direct_backend_keeps_provider_model_and_skips_claude(monkeypatch, tmp_path):
+    """issue #29：OPENLOOKOUT_BACKEND=direct 时直连 provider 端点，保留配置模型，
+    既不起本机 claude，也不走 preflight/容器降级。"""
+    from vista.core import runtime as runtime_module
+
+    class RuntimeStub:
+        def __init__(self, session, experiment, artifact_dir):
+            self.context = type("Context", (), {})()
+
+    monkeypatch.setattr(runtime_module, "TaskRuntime", RuntimeStub)
+    monkeypatch.setenv("OPENLOOKOUT_BACKEND", "direct")
+    cfg = {"model": "mimo-v2.6-flash", "base_url": "https://provider.example/anthropic",
+           "api_key": "synthetic-not-a-secret"}
+    session, runtime, backend, mode = brain.build(cfg, tmp_path)
+    assert mode == "direct-configured"
+    assert backend.mode == "direct-configured"
+    assert isinstance(backend, brain.VisualDirectBackend)
+    assert backend.cfg["model"] == "mimo-v2.6-flash"
+    assert backend.cfg["base_url"] == cfg["base_url"]
+    assert backend.cfg["api_key"] == cfg["api_key"]
+
+
+def test_build_direct_backend_openlookout_model_overrides(monkeypatch, tmp_path):
+    from vista.core import runtime as runtime_module
+
+    class RuntimeStub:
+        def __init__(self, session, experiment, artifact_dir):
+            self.context = type("Context", (), {})()
+
+    monkeypatch.setattr(runtime_module, "TaskRuntime", RuntimeStub)
+    monkeypatch.setenv("OPENLOOKOUT_BACKEND", "direct")
+    monkeypatch.setenv("OPENLOOKOUT_MODEL", "explicit-model")
+    cfg = {"model": "mimo-v2.6-flash", "base_url": "https://provider.example/anthropic",
+           "api_key": "synthetic-not-a-secret"}
+    _, _, backend, mode = brain.build(cfg, tmp_path)
+    assert mode == "direct-configured"
+    assert backend.cfg["model"] == "explicit-model"
