@@ -1357,6 +1357,15 @@ class ContinuationTracker:
         self.attempted.add((key, revision))
 
 
+BACKEND_DIRECT_VALUES = {"1", "true", "yes", "on", "direct", "mimo"}
+
+
+def backend_kind(env=None) -> str:
+    """OPENLOOKOUT_BACKEND 选择：空/host=本机 Claude Code（默认）；direct=HTTP 直连 cfg 端点。"""
+    env = os.environ if env is None else env
+    return str(env.get("OPENLOOKOUT_BACKEND", "")).strip().lower()
+
+
 def build(cfg: dict, root: Path):
     """建立持续会话?
     优先走官方的 Claude Code 容器（Vista 的标准传输道）容器不可用?    **降级为直连模?*：宁可换丢条道，也不能再出现建了会话就卡住」?    持续视觉上下文是这个项目的全部价值，卡住等于没有价?    """
@@ -1373,11 +1382,25 @@ def build(cfg: dict, root: Path):
     # direct 降级路径用同一个模型 id。OPENLOOKOUT_MODEL 可显式覆盖。
     # provider 的 URL/key 永远保持 cfg 原样，此处只换模型 id。
     host_model = str(os.environ.get("OPENLOOKOUT_MODEL") or "deepseek-v4.1-flash")
+    if backend_kind() in BACKEND_DIRECT_VALUES:
+        # 显式直连：模型直接用 provider.json 里配置的模型（如 mimo-v2.6-flash），
+        # 不套本机 claude 的 opus 别名档；OPENLOOKOUT_MODEL 仍可显式覆盖。
+        host_model = str(os.environ.get("OPENLOOKOUT_MODEL") or cfg.get("model") or "mimo-v2.6-flash")
     selected_model = host_model
     selected_cfg = {**cfg, "model": selected_model}
     exp = make_experiment(make_profile(), backend="claude", model=host_model, effort="low", revision="0.1", presentation={})
     runtime = TaskRuntime(session, exp, artifact_dir=root / "artifacts")
     try:
+        # 显式直连（issue #29）：本机 claude 供应/代理（如 cc-switch opus 档）
+        # 限流或不可用时，OPENLOOKOUT_BACKEND=direct 直接走 provider.json 的
+        # Anthropic 兼容端点，保留视觉与全部 VISTA 工具，不起 claude/Docker/MCP。
+        if backend_kind() in BACKEND_DIRECT_VALUES:
+            print("[brain] 显式直连模式（OPENLOOKOUT_BACKEND=direct）：HTTP 直连 provider 端点，不起本机 Claude Code", flush=True)
+            direct_backend = VisualDirectBackend(selected_cfg, runtime)
+            # 区分「主动选的直连」与「主通道挂了的降级」：日志/状态/测试据此识别，
+            # 两者都是非沙箱直连，运行时行为分支仍只看 isinstance。
+            direct_backend.mode = "direct-configured"
+            return session, runtime, direct_backend, "direct-configured"
         # Explicit local mode: bypass Claude Code, Docker and MCP entirely.
         # VisualDirectBackend talks to the configured Anthropic-compatible
         # endpoint directly and preserves the companion tool protocol.
@@ -1568,7 +1591,8 @@ def reset_current() -> None:
 def run() -> None:
     from vista.benchmarks.desktop.session import screen_visual
     from vista.core.profiles import Phase
-    from sprite.proactive.provider import load_provider
+    from sprite.proactive.provider import load_provider, bootstrap_dotenv
+    bootstrap_dotenv()  # .env 本地开关（OPENLOOKOUT_BACKEND 等）随本进程生效；真实环境变量优先
     _p = load_provider()
     cfg = {"model": _p.model, "base_url": _p.base_url, "api_key": _p.api_key}
     root = COMPANION / "runs" / time.strftime("%Y%m%d-%H%M%S")

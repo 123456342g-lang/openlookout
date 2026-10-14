@@ -42,6 +42,30 @@ def load_api_key() -> str:
     return key
 
 
+def bootstrap_dotenv(env=None) -> dict:
+    """把项目根 .env 里的变量以 setdefault 注入环境（真实环境变量优先，永不覆盖）。
+
+    供监督进程/brain 在启动时调用：除 SPRITE_API_KEY 外，.env 还可放
+    OPENLOOKOUT_BACKEND=direct 这类本地运行开关，让重启后的 brain 子进程
+    经 os.environ 继承。只支持 NAME=value 一行一个；改动返回 {名字: 值}。
+    """
+    env = os.environ if env is None else env
+    applied: dict = {}
+    path = PROJECT_ROOT / ".env"
+    if not path.is_file():
+        return applied
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, _, value = line.partition("=")
+        name, value = name.strip(), value.strip().strip('"').strip("'")
+        if name and name not in env:
+            env[name] = value
+            applied[name] = value
+    return applied
+
+
 def load_provider(path: Path | None = None) -> Provider:
     f = path or Path(os.environ.get("SPRITE_PROVIDER", DEFAULT_FILE))
     if not f.exists():
