@@ -1,6 +1,6 @@
 """小精灵实时窗口 + 热更新。
 python -m sprite.proactive.live          启动：采集 + 理解 + 窗口，三个子进程由它管理
-- 窗口（小猫气泡）显示最新一条“你在做什么”，来自 perceive/current.json。
+- 窗口气泡只说对用户讲的那一句。点开对话框也不展示内部判断。
 - 监视 sprite/proactive/*.py 和 sprite/gui.py：任何一个改动，自动重启全部子进程（热更新）。
 - 子进程退出会自动拉起。所有事件写入 perceive/supervisor.log。
 """
@@ -13,6 +13,7 @@ from .perceive import DIR, NOW
 from .feedback import add_feedback
 from .help import OFFER_OPTIONS
 from . import conversation
+from .public_speech import dialog_status, leaks_internal, offer_is_safe_reclaim, user_label
 
 ROOT = Path(__file__).resolve().parents[2]                       # src/openlookout
 # 同意门（2026-10-13）：offer 是要动手改电脑的提议，**必须用户点头才执行**。
@@ -156,6 +157,30 @@ def run_offer(offer: dict, show) -> None:
     show(dict(kind="action", text=final[:300], action_id=offer.get("id") or "help"))
 
 
+def run_safe_reclaim(offer: dict, show) -> None:
+    """Do a nodded temp/cache/recycle cleanup without starting another model run.
+
+    The full desktop task is what turned "好的" into auto_errored. These items
+    are already quarantined and restorable, so the tool itself is the job.
+    """
+    from vista.benchmarks.desktop.actions import reclaim
+
+    try:
+        reply = reclaim({})
+    except Exception as exc:
+        record_offer_result(offer, "auto_errored", error=type(exc).__name__,
+                            report="这次没收起来，电脑没有被改动。")
+        show(dict(kind="say", text="这次没收起来，电脑没有被改动。"))
+        return
+    text = str(getattr(reply, "text", "") or "").strip() or "临时文件和缓存已经收进隔离区，随时可以还原。"
+    if leaks_internal(text):
+        text = "临时文件、缓存和回收站里能还原的已经收好了，不满意可以还原。"
+    ok = bool(getattr(reply, "success", True))
+    record_offer_result(offer, "auto_completed" if ok else "auto_no_answer", report=text[:300])
+    kind = "action" if ok else "say"
+    show(dict(kind=kind, text=text[:300], action_id=offer.get("id") or "reclaim"))
+
+
 def run_risk_batch(offer: dict, show) -> None:
     """执行已批准的风险分级批次：只做提议里列出的那几条。
 
@@ -224,7 +249,7 @@ OFFER_ASK_S = 60
 BUBBLE_READ_S, BUBBLE_PER_CHAR_S, BUBBLE_MAX_S = 30.0, 0.1, 90.0
 # 待机提示文案。这是句引导语，不是精灵对用户说的话——所以 present() 里
 # 显式不把它写进对话记录（否则 transcript 里会出现一条它从未说过的发言）。
-IDLE_HINT_TEXT = "我在，点我可以直接聊天。"
+IDLE_HINT_TEXT = "我在。屏幕上卡住了就点我。"
 # 「正在处理」状态最多保持多久（毫秒）。这是一道**状态**上限，不是气泡时长：
 # run_offer 允许跑到 900s，在这段时间里 tick 不能把精灵的进度汇报当成新提议
 # 重新处理一遍。气泡早已自己消失，但「还在忙」这个事实要留着。
@@ -775,7 +800,7 @@ def run_gui() -> None:
         """用户点了「好的」：现在才真的开始执行。"""
         offer_state["running"] = offer.get("id")
         record_offer_result(offer, "started")
-        label = offer.get("topic") or "这件事"
+        label = user_label(offer.get("topic"))
         present_say(dict(kind="say", text=f"好，我开始处理{label}，完成后告诉你。"),
                     event_id=f"{offer.get('id')}:started")
 
@@ -794,6 +819,10 @@ def run_gui() -> None:
             # 风险分级批次：执行提议里**逐条列出的**操作，不重新让模型决定一遍。
             # 批准的是这份清单 —— 若改成再跑一次任务，点头批准的范围就被悄悄放大了。
             threading.Thread(target=run_risk_batch, args=(offer, report), daemon=True).start()
+            return
+        if offer_is_safe_reclaim(offer):
+            # 临时文件/缓存/回收站：点头之后直接做，不再另开一轮模型（那一轮会 auto_errored）。
+            threading.Thread(target=run_safe_reclaim, args=(offer, report), daemon=True).start()
             return
         threading.Thread(target=run_offer, args=(offer, report), daemon=True).start()
 
@@ -892,17 +921,7 @@ def run_gui() -> None:
 
     def open_dialog() -> None:
         drop_dead_dialog(opened)
-        current = read_current() or {}
-        about = current.get("activity", "")
-        state = current.get("state", "")
-        next_step = current.get("next_step") or {}
-        plan = ""
-        if isinstance(next_step, dict):
-            action = str(next_step.get("action") or "").strip()
-            step_status = str(next_step.get("status") or "").strip()
-            if action and step_status in {"ready", "waiting"}:
-                plan = f"\n下一步：{action}"
-        status = f"我判断你现在在：{about}\n{state}{plan}" if about else "我还在看，还没有判断。"
+        status = dialog_status(read_current())
         sx, sy = w.sx, w.sy
         # 错过气泡的提议在这里补点（issue #26）；当前正在屏上的气泡不重复列。
         pending = pending_approval_offers(active_id=offer_state.get("id"))

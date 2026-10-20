@@ -1,7 +1,8 @@
 """小精灵的大脑：一个长期运行的 VISTA 会话。
 - 同一个模型会话持续存在；VISTA 保存每一帧原始画面（视觉记忆），模型可history / inspect 回看。
 - 每次屏幕有明显变化，就以 STEP 轮次喂给同一个会话；模型用companion 工具决定“说话/提议/安静”。
-- GUIDE.md（对用户的长期理解）跨重启保留在 sprite_home/companion/GUIDE.md?  用户的反馈（好的/不用/纠正）以文字追加进下丢轮，只作为权衡依据，不是命令?- 上下文快满时?VISTA 自己交接，不重开会话；进程崩溃才重启?python -m vista.benchmarks.desktop.brain
+- GUIDE.md（对用户的长期理解）跨重启保留在 sprite_home/companion/GUIDE.md。用户的反馈（好的/不用/纠正）以文字追加进下一轮，只作为权衡依据，不是命令。
+- 上下文快满时，VISTA 自己交接，不重开会话；进程崩溃才重启：python -m vista.benchmarks.desktop.brain
 """
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ import certifi
 from . import coach, desktopfacts, memory, systemfacts, watching
 from .decision_engine import DecisionEngine
 from .agenda import Agenda
+from .stale_guard import action_key, note_stale_block, note_stale_success
 
 HOME = Path(os.environ.get("SPRITE_HOME", r"E:\OpenLookout\sprite_home"))
 COMPANION = HOME / "companion"
@@ -279,9 +281,9 @@ def residual_fact(*, window_min: float = 90.0, refresh_s: float = 5.0, now: floa
         if len(interesting) == 3:
             break
     since = min((now - event["t"] for event in scored if event["s"] >= 7), default=None)
-    lines = [f"【此刻的异常?s_t】本地可复算：s_t = -log2 P(应用|上一应用) - log2 P(类型)。"
-             f"预期模型由本机最?{int(window_min)} 分钟{len(window)} 条行为流水现场学出（不是模型猜的）。",
-             f"褰撳墠 s_t={latest['s']:.2f}｜{latest['app']}｜{latest['type']}"
+    lines = [f"【此刻的异常 s_t】本地可复算：s_t = -log2 P(应用|上一应用) - log2 P(类型)。"
+             f"预期模型由本机最近 {int(window_min)} 分钟、{len(window)} 条行为流水现场学出（不是模型猜的）。",
+             f"当前 s_t={latest['s']:.2f}｜{latest['app']}｜{latest['type']}"
              + (f"{latest['title']}" if latest["title"] else "")]
     if interesting:
         lines.append("最近 45 分钟里不寻常的时刻（越高越不像本机平时的样子）。")
@@ -398,9 +400,9 @@ def long_term_fact(*, days: float = 7.0, refresh_s: float = 600.0,
     if churn:
         lines.append("反复读写的文件（长期在手，是判断当下目标的最好锚点）。")
         for path, n in churn[:6]:
-            lines.append(f"- {path} {n} 娆")
+            lines.append(f"- {path} {n} 次")
     lines.append("用法：如果当前画面与上面某个文件/应用对得上，说明用户此刻在做这件事的延续。"
-                 "可以据此提前把下丢步准备好（做完再说，不要问要不要做）。"
+                 "可以据此提前把下一步准备好（做完再说，不要问要不要做）。"
                  "但长期模式不构成打扰理由—是否开口仍由当下时机决定，宁可 quiet。")
     text = "\n".join(lines)
     LONG_TERM_CACHE.update(at=now, text=text)
@@ -474,6 +476,7 @@ def turn_wants_visual(
     now: float,
     last_visual_turn: float,
     visual_recheck_s: float = VISUAL_RECHECK_S,
+    reply_text: str | None = None,
 ) -> bool:
     """本轮是否需要把**新截图**送进模型（带图轮 = 最贵的资源）。
 
@@ -493,8 +496,14 @@ def turn_wants_visual(
     时间以外的具体事由（见 heartbeat_note）。静止超过
     ``visual_recheck_s`` 兜底刷新一次，防止视觉上下文长期过期。
     """
-    if screen_due or window_due or timing_due or return_due or reply_due:
+    if screen_due or window_due or timing_due or return_due:
         return True
+    if reply_due:
+        # 临期回话默认仍附图（调用方没带原文时）。带了原文就只在这句话
+        # 指向眼前画面时附图，纯文本回话不强制视觉轮（issue #27）。
+        if reply_text is None:
+            return True
+        return feedback_needs_visual(reply_text)
     # 只有指向眼前画面的反馈才附图（issue #27）；纯文本反馈照样立即开轮，
     # 只是省掉截图与视觉编码——唤醒在主循环闸门，不在这里。
     if fb and feedback_needs_visual(fb):
@@ -613,18 +622,18 @@ def conversation_fact(*, idle_s: float, now: float) -> str:
     )
     turn_context = (
         f"【待回应话轮 id={conversation.message_id(pending)}】他{pending.get('text', '')}\n"
-        "这是对你说的话，先接住这个意思，companion.reply_to 填这?id。已有依据足够就直接回答。"
+        "这是对你说的话，先接住这个意思，companion.reply_to 填这个 id。已有依据足够就直接回答。"
         "不要为了回答普通聊天先做全量扫描、读整份笔记或检索；当前页面变了不等于这句对话失效。"
         if pending else
-        "【当前没有待回应话轮】旧问题只用于理解，不反复补答不要接睢自己的未获回应观点续讲，"
+        "【当前没有待回应话轮】旧问题只用于理解，不反复补答。不要接着自己的未获回应观点续讲，"
         "也不要把屏幕里的修复汇报当成给你的新消息。"
     )
     return (
         f"【对话现场】出现于 {time.strftime('%H:%M:%S', time.localtime(now))}。"
         f"键鼠静止 {idle_s:.0f} 秒，这是节奏线索，不是聊天开关，也不证明他离开。\n"
-        "仅附最近的真实交流，旧事不当当前事实工作进行中也可以聊。\n"
+        "仅附最近的真实交流，旧事不当当前事实。工作进行中也可以聊。\n"
         + own_recent + "\n" + turn_context + "\n" + response_context + "\n"
-        + ("\n".join(transcript) if transcript else "你们还没有实际对话，可结合画面自然开丢个话题）")
+        + ("\n".join(transcript) if transcript else "你们还没有实际对话，可结合画面自然开一个话题。")
     )
 
 
@@ -654,6 +663,20 @@ def pending_reply_age(now: float) -> float | None:
     if age < 0 or age > PENDING_MAX_AGE_S:
         return None
     return age
+
+
+def pending_reply_text(now: float) -> str:
+    """The unanswered user line, or "" when nothing is still waiting."""
+    if pending_reply_age(now) is None:
+        return ""
+    try:
+        from sprite.proactive import conversation
+        pending = conversation.pending_message(conversation.history(limit=24))
+    except Exception:
+        return ""
+    if not isinstance(pending, dict):
+        return ""
+    return str(pending.get("text") or "")
 
 
 def pending_reply_deadline(now: float) -> float | None:
@@ -744,33 +767,89 @@ def memory_fact() -> str:
         return ""
 
 
-def model_response(request):
+class ModelRateLimited(RuntimeError):
+    """The provider answered 429. Stop this turn; do not spin."""
+
+
+# Two sleeps, three HTTP tries, then give up. Not an open-ended 60-retry.
+RATE_LIMIT_BACKOFF_S = (2.0, 8.0)
+RATE_LIMIT_COOLDOWN_S = 600.0
+RATE_LIMIT_SAY = "我这会儿连不上，先安静陪着，过几分钟再看你这边。"
+
+
+def model_response(request, *, sleep=time.sleep):
     import http.client
     import ssl
     import urllib.error
     import urllib.request
 
-    for attempt in range(2):
+    transport_attempt = 0
+    rate_attempt = 0
+    while True:
         try:
             with urllib.request.urlopen(request, timeout=180) as response:
                 return json.loads(response.read().decode())
-        except urllib.error.URLError as error:
-            if attempt or not isinstance(error.reason, (ssl.SSLEOFError, ConnectionResetError)):
+        except urllib.error.HTTPError as error:
+            if getattr(error, "code", None) != 429:
                 raise
+            if rate_attempt >= len(RATE_LIMIT_BACKOFF_S):
+                raise ModelRateLimited("模型服务暂时限流，本轮不再重试。") from error
+            sleep(RATE_LIMIT_BACKOFF_S[rate_attempt])
+            rate_attempt += 1
+            print(f"[brain] model rate-limited; backoff {RATE_LIMIT_BACKOFF_S[rate_attempt - 1]}s "
+                  f"({rate_attempt}/{len(RATE_LIMIT_BACKOFF_S)})", flush=True)
+        except urllib.error.URLError as error:
+            if transport_attempt or not isinstance(error.reason, (ssl.SSLEOFError, ConnectionResetError)):
+                raise
+            transport_attempt += 1
             print(f"[brain] model transport interrupted: {type(error.reason).__name__}; retrying request once", flush=True)
         except http.client.RemoteDisconnected:
-            if attempt:
+            if transport_attempt:
                 raise
+            transport_attempt += 1
             print("[brain] model transport interrupted: RemoteDisconnected; retrying request once", flush=True)
+
+
+def arm_rate_limit(backend, now: float | None = None) -> None:
+    """Pause model turns and say so once, in plain language."""
+    now = time.time() if now is None else now
+    backend.rate_limited_until = now + RATE_LIMIT_COOLDOWN_S
+    if getattr(backend, "rate_limit_said", False):
+        return
+    backend.rate_limit_said = True
+    PERCEIVE.mkdir(parents=True, exist_ok=True)
+    row = {
+        "t": now,
+        "kind": "companion",
+        "say": RATE_LIMIT_SAY,
+        "speech": {"kind": "companion", "say": RATE_LIMIT_SAY},
+        "activity": "",
+        "state": "",
+        "source": "vista",
+    }
+    temporary = PERCEIVE / "current.json.tmp"
+    try:
+        temporary.write_text(json.dumps(row, ensure_ascii=False), encoding="utf-8")
+        temporary.replace(PERCEIVE / "current.json")
+    except OSError:
+        return
+    try:
+        from sprite.proactive.help import publish
+        publish({"id": f"rate-{time.time_ns()}", "t": now, "text": RATE_LIMIT_SAY,
+                 "topic": "陪伴", "kind": "companion"})
+    except Exception:
+        return
 
 
 class DirectReply:
     """对齐容器后端的回包形状（brain 只读这几个字段）。"""
 
-    def __init__(self, text: str = "", returncode: int = 0, boundary: str | None = "turn"):
+    def __init__(self, text: str = "", returncode: int = 0, boundary: str | None = "turn",
+                 *, rate_limited: bool = False):
         self.final_message = text
         self.returncode = returncode
         self.boundary = boundary
+        self.rate_limited = rate_limited
 
 
 class _LegacyDirectBackend:
@@ -807,7 +886,7 @@ class _LegacyDirectBackend:
             with urllib.request.urlopen(req, timeout=180) as r:
                 d = _json.loads(r.read().decode())
         except Exception as e:
-            print(f"[brain] 妯″瀷璋冪敤澶辫触：{type(e).__name__}", flush=True)
+            print(f"[brain] 模型调用失败：{type(e).__name__}", flush=True)
             return DirectReply("")
         text = "".join(c.get("text", "") for c in d.get("content", []) if c.get("type") == "text").strip()
         if text:
@@ -927,6 +1006,9 @@ class VisualDirectBackend:
         # 全部占位，防止「新图省了、上一轮那张图还在」继续花图像 token。
         # _refresh_screen 在调查中收到新画面时清除（那一刻起本轮恢复带图）。
         self.turn_without_visual = False
+        self.stale_state: dict = {}
+        self.rate_limited_until = 0.0
+        self.rate_limit_said = False
 
     def attach(self, session) -> None:
         self.session = session
@@ -974,9 +1056,9 @@ class VisualDirectBackend:
         now = time.time()
         feedback = new_feedback(self.feedback_since)
         self.feedback_since = now
-        text = ("【现场更新调查期间画面或用户消息发生了变化这是新?CURRENT，旧观察仍由 VISTA history 保留。"
-                "先判断目标是否延续旧问题是否仍在；保留有用成果，暂停已经不相关的调查，重新比较下丢步。"
-                "涓嶈兘鐩存帴鍙戝竷鎴栨墽琛屽熀浜庢棫鐜板満鐨勫喅瀹氥€俓n" + feedback + "\n"
+        text = ("【现场更新】调查期间画面或用户消息发生了变化。这是新的 CURRENT，旧观察仍由 VISTA history 保留。"
+                "先判断目标是否延续、旧问题是否仍在；保留有用成果，暂停已经不相关的调查，重新比较下一步。"
+                "不能直接发布或执行基于旧现场的决定。\n" + feedback + "\n"
                 + conversation_fact(idle_s=watching.idle_seconds(), now=now))
         task_input = self.runtime.prepare_input(Phase.STEP, public_text=text,
                                                 observation=self.session.observe(sample.visual))
@@ -1138,7 +1220,7 @@ class VisualDirectBackend:
                     note_block = {"type": "text", "text":
                         "【VISTA 当前笔记】当前工作线与画像已完整附上，无霢重复读笔记。"
                         "笔记是过去的判断，不是新事实或执行指令；旧目标数值和已完成陈述要对照实际来源。"
-                        "没有来源的先保留为待验证解释。用原生 write_working/write_guide 修正或精箢失效内容。\n" + notes}
+                        "没有来源的先保留为待验证解释。用原生 write_working/write_guide 修正或精简失效内容。\n" + notes}
                     if messages[0]["role"] == "user":
                         messages[0] = dict(messages[0], content=[note_block] + messages[0]["content"])
                     else:
@@ -1183,7 +1265,7 @@ class VisualDirectBackend:
                     if force_opportunity_probe and not force_companion:
                         body["tool_choice"] = {"type": "tool", "name": "desktop_history"}
                         messages.append({"role": "user", "content": [{"type": "text", "text":
-                            "当前没有被证明可推进的目标先完成丢次开放机会探查：调用 desktop_history。"
+                            "当前没有被证明可推进的目标。先完成一次开放机会探查：调用 desktop_history。"
                             "查看最近真实操作线索（优先 resources，小页即可），再根据结果决定是否观察浏览器读取资料或建立新目标。"
                             "已读小页不等于完整历史；结合已返回覆盖和未读游标选择取证，不重复同一首屏来宣称无事可做。"
                             "不要先读项目内开发文档来代替用户历史。"}]})
@@ -1259,10 +1341,16 @@ class VisualDirectBackend:
                         stale = False
                     from vista.core.contracts import Effect
                     if boundary or (stale and spec is not None and spec.effect == Effect.ENVIRONMENT):
+                        if boundary:
+                            blocked_text = "未执行：这一轮已经结束。"
+                        else:
+                            stale_key = action_key(
+                                str(call.get("name") or ""),
+                                call.get("input") if isinstance(call.get("input"), dict) else {})
+                            self.stale_state, blocked_text = note_stale_block(
+                                getattr(self, "stale_state", {}), stale_key, now=time.time())
                         results.append({"type": "tool_result", "tool_use_id": call_id, "is_error": True,
-                                        "content": [{"type": "text", "text":
-                                            "未执行：现场已有变化，请先读取新?CURRENT 后重新判断。"
-                                            if not boundary else "未执行：这一轮已经结束。"}]})
+                                        "content": [{"type": "text", "text": blocked_text}]})
                         continue
                     if (call.get("name") == "desktop_review_evidence"
                             and call.get("input", {}).get("id") not in delivered_evidence):
@@ -1271,6 +1359,11 @@ class VisualDirectBackend:
                                             "请先接收并查看截图工具返回的实际图片，再核验；不能在同一请求中预先过未见截图。"}]})
                         continue
                     execution = self.runtime.execute(call.get("name"), call.get("input", {}), call_id)
+                    if (execution.success and spec is not None and spec.effect == Effect.ENVIRONMENT
+                            and isinstance(call.get("input"), dict)):
+                        self.stale_state = note_stale_success(
+                            getattr(self, "stale_state", {}),
+                            action_key(str(call.get("name") or ""), call.get("input")))
                     if (call.get("name") == "desktop_history" and execution.success
                             and force_opportunity_probe and not force_companion):
                         requested_snapshot = call.get("input", {}).get("snapshot")
@@ -1302,6 +1395,10 @@ class VisualDirectBackend:
                 readonly_streak = readonly_streak + 1 if (read_only_batch or failed_batch) and not new_evidence else 0
                 if boundary:
                     break
+        except ModelRateLimited:
+            self.rate_limited_until = time.time() + RATE_LIMIT_COOLDOWN_S
+            print("[brain] model rate-limited; giving up on this turn", flush=True)
+            return DirectReply("", returncode=1, boundary=None, rate_limited=True)
         except Exception as exc:
             reason = getattr(exc, "reason", exc)
             detail = str(reason).replace(str(self.cfg.get("api_key") or "<unset>"), "[redacted]")[:240]
@@ -1656,6 +1753,8 @@ def run() -> None:
         while not runtime.terminal:
             time.sleep(2)
             now = time.time()
+            if now < float(getattr(backend, "rate_limited_until", 0) or 0):
+                continue
             sample = live_screen.latest() if live_screen is not None else None
             vis = sample.visual if sample is not None else screen_visual()
             th = thumb(vis)
@@ -1718,7 +1817,7 @@ def run() -> None:
                     except OSError:
                         pass
                 except Exception as exc:
-                    print(f"[brain] timing 鍒ゆ柇澶辫触：{exc!r}", flush=True)
+                    print(f"[brain] timing 判断失败：{exc!r}", flush=True)
             prep_due = (not fb) and (maintenance_due or history_due or heartbeat_due or (turn_count and turn_count % PREP_EVERY_TURNS == 0))
             decision = session.decisions[-1] if session.decisions else {}
             evidence_revision = getattr(session, "evidence_revision", 0)
@@ -1746,7 +1845,8 @@ def run() -> None:
             visual_wanted = turn_wants_visual(
                 screen_due=screen_due, window_due=window_due, timing_due=timing_due,
                 fb=fb, return_due=return_due, reply_due=reply_due,
-                now=now, last_visual_turn=last_visual_turn)
+                now=now, last_visual_turn=last_visual_turn,
+                reply_text=pending_reply_text(now) if reply_due else None)
             if not (screen_due or window_due or background_due or maintenance_due or history_due or timing_due or fb or heartbeat_due or return_due or continue_due or goal_due or reply_due):
                 continue
             if continue_due:
@@ -1790,7 +1890,7 @@ def run() -> None:
             else:
                 cycle = ""
                 lead = "这是回话轮：他在等你回答。" if reply_pending else "这是本次实时工作轮。"
-            look_hint = ("先看 CURRENT，需要时?history 回看之前的画面；"
+            look_hint = ("先看 CURRENT，需要时用 history 回看之前的画面；"
                          if visual_wanted else
                          "本轮没有新画面，也不要为了找话题回看历史画面；")
             text = ((fb + "\n") if fb else "") + lead + look_hint + "再用 companion 工具决定此刻说什么（或安静）。"
@@ -1878,6 +1978,8 @@ def run() -> None:
             r = backend.run(runtime.prepare_input(
                 Phase.STEP, public_text=text,
                 observation=session.observe(vis) if visual_wanted else None))
+            if getattr(r, "rate_limited", False) or getattr(r, "api_error_status", None) == 429:
+                arm_rate_limit(backend)
             # 轮末再刷一次 last_turn（轮首 1516 行那次之外）：一轮可达
             # TURN_TIMEOUT_S=300s > HEARTBEAT_S=240s，只记轮首的话，超时轮
             # 结束的下一个 tick 立即满足心跳，背靠背再开一轮。以轮末为基准后，

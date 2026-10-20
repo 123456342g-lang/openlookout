@@ -15,6 +15,7 @@ from vista.core.contracts import (
 from . import actions
 from . import permissions
 from .agenda import Agenda
+from sprite.proactive.public_speech import leaks_internal
 from vista.core.json import thaw
 
 SHOT_WIDTH, SHOT_QUALITY = 1280, 75
@@ -179,8 +180,16 @@ class DesktopSession:
                 and d.get("intent") != "conversation"):
             kind, say = "quiet", ""
             d["kind"], d["say"] = kind, say
+        if kind in ("companion", "offer") and say and leaks_internal(say):
+            # The model tried to narrate our own machinery. End the turn quietly
+            # instead of putting that sentence on the bubble.
+            d["leak_suppressed"] = True
+            kind, say = "quiet", ""
+            d["kind"], d["say"] = kind, say
         self.decisions.append(d)
         activity = (d.get("activity") or "").strip() or say or "我在持续观察当前画面"
+        if leaks_internal(activity):
+            activity = "我在安静陪着"
         CURRENT.parent.mkdir(parents=True, exist_ok=True)
         tmp = CURRENT.with_suffix(".tmp")
         work = self.work_summary()
@@ -216,6 +225,10 @@ class DesktopSession:
             publish(offer); record(dict(offer, result="shown"))
             self.reports.append(say)
         self._flush_risk_batches()
+        if d.get("leak_suppressed"):
+            return ToolReply(
+                "这句话没有发给用户：里面有内部用语。下一轮只讲他正在做的事，用人话；没有就 quiet。",
+                boundary="decision_complete", event_text="decision:quiet")
         return ToolReply("已记录这一轮的决定。", boundary="decision_complete", event_text=f"decision:{d.get('kind')}")
 
     def _flush_risk_batches(self) -> None:
