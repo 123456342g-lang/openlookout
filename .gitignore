@@ -50,3 +50,13 @@ brain.py.codex-*
 brain.py.work-*.bak
 # 含明文凭据的本地实验目录，非项目内容，绝不入库
 /netsec-lab/
+# 公开发布：密钥、运行时、嵌套第三方、事故备份都不入库
+**/provider.json
+sprite_home/
+third_party/
+*.bak
+*.bak_*
+brain.py.broken-*
+brain.py.work-*.bak
+brain.py.codex-*
+*.log
