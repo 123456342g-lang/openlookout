@@ -190,10 +190,12 @@ def _loop_source() -> str:
 
 def test_pending_message_is_wired_into_the_trigger_gate():
     """A stranded message needs something to wake the loop, not just a prompt."""
-    gate = next(line for line in _loop_source().splitlines()
-                if line.strip().startswith("if not (screen_due or"))
-    assert "reply_due" in gate, \
+    src = _loop_source()
+    start = src.index("if not model_turn_due(")
+    gate = src[start:src.index("):", start)]
+    assert "reply_due=reply_due" in gate, \
         "the trigger gate ignores reply_due, so a quiet screen still strands the message"
+    assert "heartbeat_due" not in gate and "history_due" not in gate
 
 
 def test_a_pending_message_makes_the_turn_a_reply_turn():

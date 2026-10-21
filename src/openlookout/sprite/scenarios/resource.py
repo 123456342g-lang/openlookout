@@ -68,13 +68,41 @@ def _mk_quarantine_action(world, items, label, risk, ask_text="", force=False, c
                   done_short=lambda xs: f"清了 {len(paths)} 个{label}")
 
 
+def _idle_background_browser(pr, critical: bool) -> bool:
+    """A background browser can be suspended when memory is already critical.
+
+    classify_proc only calls a browser safe when it is a ``--type=renderer``
+    that has already been idle for 15 or 30 minutes. A plain sleeping browser
+    therefore used to be skipped as high risk, and nothing was suspended or
+    reported. Foreground, a visible window, and audio stay blocked. Below
+    critical, the long renderer rule is unchanged.
+    """
+    name = pr.name.lower().removesuffix(".exe")
+    if name not in R.BROWSERS:
+        return False
+    if pr.foreground_tree or pr.has_window or pr.audio:
+        return False
+    if pr.rss_mb < 100:
+        return False
+    scale = R.PROC_IDLE_SCALE
+    if "--type=renderer" in (pr.cmdline or ""):
+        need = (30 if critical else (1800 if pr.audio is None else 900)) * scale
+        return pr.idle_s >= need and (critical or pr.rss_mb >= 150)
+    if not critical:
+        return False
+    return pr.idle_s >= 30 * scale
+
+
 def propose(pb: Problem, world: World):
     acts = []
     if pb.kind == "mem":
+        critical = int((pb.ctx or {}).get("level") or 0) >= 2
         for pr in world.snap.procs:
             if pr.rss_mb < 100 or pr.pid in world.suspended: continue
             rk = R.classify_proc(pr)
-            if rk.level == "safe":
+            idle_browser = _idle_background_browser(pr, critical)
+            if rk.level == "safe" or idle_browser:
+                reason = rk.reason if rk.level == "safe" else "关键内存压力下的闲置后台浏览器，挂起即可，切回就恢复"
                 def run(pr=pr):
                     if not world.ctrl.suspend(pr.pid, name=pr.name, rss_mb=pr.rss_mb): raise RuntimeError('suspend refused')
                     world.ctrl.trim(pr.pid); world.suspended[pr.pid] = pr.name
@@ -83,7 +111,7 @@ def propose(pb: Problem, world: World):
                 def dry(pr=pr): return any(q.pid == pr.pid and q.name == pr.name and not q.foreground_tree for q in world.snap.procs)
                 def ver(r): return r["pid"] in getattr(world.ctrl, "suspended", {r["pid"]})
                 acts.append(Action("suspend:" + pr.name, f"挂起 {pr.name}#{pr.pid}", "safe", "full", relief=pr.rss_mb * 0.7, blast_items=1,
-                                   reason=rk.reason, dry_run=dry, run=run, verify=ver, undo=undo,
+                                   reason=reason, dry_run=dry, run=run, verify=ver, undo=undo,
                                    done_text=lambda xs, pr=pr: f"暂停了 1 个{pr.name}后台进程", done_short=lambda xs: "停了 1 个后台进程",
                                    ask_text=""))
             else:

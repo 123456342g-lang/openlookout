@@ -199,9 +199,12 @@ def test_backend_kind_defaults_to_direct(monkeypatch):
 
 
 def test_backend_kind_accepts_direct_aliases():
-    for value in ("direct", "MIMO", "1", " true ", "yes"):
+    for value in ("direct", "1", " true ", "yes"):
         kind = brain.backend_kind({"OPENLOOKOUT_BACKEND": value})
         assert kind in brain.BACKEND_DIRECT_VALUES, value
+    assert "mimo" not in brain.BACKEND_DIRECT_VALUES
+    # An unknown name is not a new backend. It stays on direct.
+    assert brain.backend_kind({"OPENLOOKOUT_BACKEND": "mimo"}) == "direct"
 
 
 def test_build_direct_backend_keeps_provider_model_and_skips_claude(monkeypatch, tmp_path):

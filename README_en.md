@@ -67,15 +67,17 @@ A system-tray menu is created only when `pystray` imports. If it does not, the w
 
 The supervisor starts a rules process next to the brain, the window, and the operation recorder. It runs the tested resource scenario (memory pressure, suspend, quarantine of restorable cache) and does not call a model. Actions the engine already treats as safe and reversible run, then a bubble reports them with undo. High-risk or irreversible actions are skipped. Offers that wait for "OK" still come from the model path.
 
+When free memory is under 10%, a background browser that has been idle for about 30 seconds, is not the foreground, has no window, and is not playing audio is suspended. The bubble includes undo. A mere warning still uses the long-idle renderer rule. Foreground, audio, and protected processes stay untouched. The Linux probe does not mark the foreground window, so that guard applies when the Windows probe can see it.
+
 ## Cost
 
-A turn still waits for a screen change, new feedback, or the heartbeat. An outbound image whose long edge is over 768 pixels is downscaled to JPEG first. Later requests in the same turn omit the full screenshot when the screen did not change. Crops returned by tools stay. A turn makes at most 4 HTTP calls by default (`OPENLOOKOUT_MAX_CALLS`, clamped to 1..8).
+An unchanged idle screen does not call the model. A heartbeat, or the mere presence of history files, is not a trigger. Feedback, a maintenance signal, a continuation, a goal, or a pending reply still opens a turn. An outbound image whose long edge is over 768 pixels is downscaled to JPEG first. Later requests in the same turn omit the full screenshot when the screen did not change. Crops returned by tools stay. A turn makes at most 4 HTTP calls by default (`OPENLOOKOUT_MAX_CALLS`, clamped to 1..8).
 
 ## Config
 
 | Name | Meaning |
 |---|---|
-| `OPENLOOKOUT_BACKEND` | Empty or `direct`: HTTP. `claude` / `host`: local Claude Code. Unknown values stay on direct. |
+| `OPENLOOKOUT_BACKEND` | Empty or `direct`: HTTP. `claude` / `host`: local Claude Code. `mimo` is no longer an alias; unknown values, including that one, stay on direct. |
 | `OPENLOOKOUT_MODEL` | Overrides `model` in `provider.json`. Blank uses the file. |
 | `OPENLOOKOUT_LANG` | `zh` or `en`. Blank follows the Windows display language: Chinese for `zh*`, English otherwise. |
 | `OPENLOOKOUT_MAX_CALLS` | HTTP calls per turn. Default 4, clamped to 1..8. |

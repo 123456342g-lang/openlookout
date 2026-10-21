@@ -53,6 +53,8 @@ def _engine_gates_off():
         cands.sort(key=lambda a: (a.risk == "high", -a.relief, a.blast_bytes))
         remaining = pb.need
         floor = pb.need * self.gate.get("min_gain_frac", 0.05) if pb.need else 0
+        if pb.kind == "mem":
+            floor = min(floor, 100.0)
         for a in cands:
             tr = self.ledger.trust(a.kind)
             # 变异点：不再跳过 high / 不可还原 / medium 不自信
