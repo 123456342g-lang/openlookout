@@ -1,15 +1,16 @@
 """python -m vista.benchmarks.desktop.cli --objective "..." [--read-only] [--binary PATH]
-Runs one desktop task on the VISTA harness with the host-native Claude Code as the
-transport. The model comes from the host's own provider configuration
-(~/.claude/settings.json env block, e.g. the opus alias -> deepseek-v4.1-flash)."""
+Runs one desktop task on the VISTA harness with host-native Claude Code as the
+transport. The model id is the one configured for that Claude installation."""
 from __future__ import annotations
 
 import argparse, json, os, sys, time
 from pathlib import Path
 
+from sprite.config import sprite_home
+
 PROJECT = Path(__file__).resolve().parents[3]          # src/openlookout
 PLAYER_IMAGE = "arc3-claude-player:0.1"
-HOME = Path(os.environ.get("SPRITE_HOME", r"E:\OpenLookout\sprite_home"))
+HOME = sprite_home()
 
 
 def main(argv=None) -> None:

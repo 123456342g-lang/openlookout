@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import inspect
 
+import pytest
+
 from vista.benchmarks.desktop import brain
 from vista.benchmarks.desktop import systemfacts, watching
 
@@ -120,8 +122,8 @@ def test_maintenance_signal_wakes_when_critical_pressure_changes():
     assert signal.pending
 
 
-def test_build_selects_deepseek_flash_without_rewriting_provider(monkeypatch, tmp_path):
-    """The configured provider URL/key remain untouched; only the model id changes."""
+def test_build_defaults_to_direct_and_keeps_the_provider_model(monkeypatch, tmp_path):
+    """An empty backend is direct HTTP. It does not call Claude or rewrite the model."""
     from vista.core import runtime as runtime_module
 
     created = {}
@@ -132,36 +134,68 @@ def test_build_selects_deepseek_flash_without_rewriting_provider(monkeypatch, tm
             self.context = type("Context", (), {})()
 
     monkeypatch.setattr(runtime_module, "TaskRuntime", RuntimeStub)
-    # Cause the expected explicit direct fallback without network or Docker.
-    import vista.backends.claude.preflight as preflight
-    monkeypatch.setattr(preflight, "run_runtime_preflight",
-                        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("synthetic unavailable")))
+    monkeypatch.delenv("OPENLOOKOUT_BACKEND", raising=False)
+    monkeypatch.delenv("OPENLOOKOUT_MODEL", raising=False)
+
+    def boom(*args, **kwargs):
+        raise AssertionError("create_backend must not run when the backend is unset")
+
+    import vista.backends.claude as claude_pkg
+    monkeypatch.setattr(claude_pkg, "create_backend", boom)
     cfg = {"model": "configured-old-model", "base_url": "https://provider.invalid/anthropic",
-           "api_key": "synthetic-not-a-secret"}
+           "api_key": "synthetic-not-a-secret", "protocol": "anthropic"}
     session, runtime, backend, mode = brain.build(cfg, tmp_path)
-    assert mode == "direct-fallback"
-    assert backend.mode == "direct-fallback"
-    assert backend.cfg["model"] == "deepseek-v4.1-flash"
+    assert mode == "direct-configured"
+    assert backend.mode == "direct-configured"
+    assert isinstance(backend, brain.VisualDirectBackend)
+    assert backend.cfg["model"] == "configured-old-model"
     assert backend.cfg["base_url"] == cfg["base_url"]
     assert backend.cfg["api_key"] == cfg["api_key"]
-    assert created["experiment"].model == "deepseek-v4.1-flash"
+    assert created["experiment"].model == "configured-old-model"
 
 
-def test_configured_claude_provider_receives_deepseek_model():
+def test_claude_opt_in_raises_instead_of_falling_back(monkeypatch, tmp_path):
+    from vista.core import runtime as runtime_module
+
+    class RuntimeStub:
+        def __init__(self, session, experiment, artifact_dir):
+            self.context = type("Context", (), {})()
+
+    monkeypatch.setattr(runtime_module, "TaskRuntime", RuntimeStub)
+    monkeypatch.setenv("OPENLOOKOUT_BACKEND", "claude")
+    monkeypatch.delenv("OPENLOOKOUT_NO_DOCKER_MCP", raising=False)
+    monkeypatch.delenv("OPENLOOKOUT_CLAUDE_BIN", raising=False)
+    monkeypatch.setattr(brain.shutil, "which", lambda *_args, **_kwargs: None)
+
+    def missing(**_kwargs):
+        raise FileNotFoundError("synthetic missing claude")
+
+    import vista.backends.claude.runner as runner
+    monkeypatch.setattr(runner, "default_claude_bin", missing)
+    cfg = {"model": "configured-old-model", "base_url": "https://provider.invalid/anthropic",
+           "api_key": "synthetic-not-a-secret"}
+    with pytest.raises(FileNotFoundError, match="synthetic missing claude"):
+        brain.build(cfg, tmp_path)
+
+
+def test_configured_claude_provider_receives_explicit_model():
     from vista.backends.claude.provider import MIMO_PROVIDER, provider_environment
 
     env = provider_environment(MIMO_PROVIDER, credential="synthetic",
-                                model="deepseek-v4.1-flash", effort="low",
+                                model="configured-model-id", effort="low",
                                 base_url="https://provider.invalid/anthropic")
-    assert env["ANTHROPIC_MODEL"] == "deepseek-v4.1-flash"
+    assert env["ANTHROPIC_MODEL"] == "configured-model-id"
     assert env["ANTHROPIC_BASE_URL"] == "https://provider.invalid/anthropic"
     assert env["ANTHROPIC_AUTH_TOKEN"] == "synthetic"
 
 
-def test_backend_kind_defaults_to_host(monkeypatch):
+def test_backend_kind_defaults_to_direct(monkeypatch):
     monkeypatch.delenv("OPENLOOKOUT_BACKEND", raising=False)
-    assert brain.backend_kind() not in brain.BACKEND_DIRECT_VALUES
-    assert brain.backend_kind({"OPENLOOKOUT_BACKEND": "host"}) not in brain.BACKEND_DIRECT_VALUES
+    assert brain.backend_kind() == "direct"
+    assert brain.backend_kind({"OPENLOOKOUT_BACKEND": ""}) == "direct"
+    assert brain.backend_kind({"OPENLOOKOUT_BACKEND": "host"}) == "claude"
+    assert brain.backend_kind({"OPENLOOKOUT_BACKEND": "claude"}) == "claude"
+    assert brain.backend_kind({"OPENLOOKOUT_BACKEND": "typo"}) == "direct"
 
 
 def test_backend_kind_accepts_direct_aliases():
@@ -181,13 +215,14 @@ def test_build_direct_backend_keeps_provider_model_and_skips_claude(monkeypatch,
 
     monkeypatch.setattr(runtime_module, "TaskRuntime", RuntimeStub)
     monkeypatch.setenv("OPENLOOKOUT_BACKEND", "direct")
-    cfg = {"model": "mimo-v2.6-flash", "base_url": "https://provider.example/anthropic",
+    monkeypatch.delenv("OPENLOOKOUT_MODEL", raising=False)
+    cfg = {"model": "configured-model", "base_url": "https://provider.example/anthropic",
            "api_key": "synthetic-not-a-secret"}
     session, runtime, backend, mode = brain.build(cfg, tmp_path)
     assert mode == "direct-configured"
     assert backend.mode == "direct-configured"
     assert isinstance(backend, brain.VisualDirectBackend)
-    assert backend.cfg["model"] == "mimo-v2.6-flash"
+    assert backend.cfg["model"] == "configured-model"
     assert backend.cfg["base_url"] == cfg["base_url"]
     assert backend.cfg["api_key"] == cfg["api_key"]
 
@@ -202,7 +237,7 @@ def test_build_direct_backend_openlookout_model_overrides(monkeypatch, tmp_path)
     monkeypatch.setattr(runtime_module, "TaskRuntime", RuntimeStub)
     monkeypatch.setenv("OPENLOOKOUT_BACKEND", "direct")
     monkeypatch.setenv("OPENLOOKOUT_MODEL", "explicit-model")
-    cfg = {"model": "mimo-v2.6-flash", "base_url": "https://provider.example/anthropic",
+    cfg = {"model": "configured-model", "base_url": "https://provider.example/anthropic",
            "api_key": "synthetic-not-a-secret"}
     _, _, backend, mode = brain.build(cfg, tmp_path)
     assert mode == "direct-configured"

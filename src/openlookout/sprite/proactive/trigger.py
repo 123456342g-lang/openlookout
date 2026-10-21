@@ -11,8 +11,10 @@ from dataclasses import dataclass
 from pathlib import Path
 import psutil
 
+from ..config import sprite_home
+
 WS = Path(__file__).resolve().parent / "ws"
-HOME = Path(os.environ.get("SPRITE_HOME", r"E:\OpenLookout\sprite_home"))
+HOME = sprite_home()
 UNDO_LOG = HOME / "undo.jsonl"
 QUARANTINE = HOME / "quarantine"
 SYSTEM_DRIVE = "C:\\"

@@ -31,10 +31,11 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Callable
 
+from sprite.config import sprite_home
 from sprite.i18n import t
 from vista.core.contracts import Effect
 
-HOME = Path(os.environ.get("SPRITE_HOME", r"E:\OpenLookout\sprite_home"))
+HOME = sprite_home()
 CONFIG = HOME / "permissions.json"
 # 已批准、尚未执行的批次。GUI 是独立进程，所以必须落盘才能被它读到。
 PENDING = HOME / "perceive" / "pending_batches.jsonl"

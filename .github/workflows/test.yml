@@ -1,0 +1,24 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  pytest:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test dependencies
+        working-directory: src/openlookout
+        run: python -m pip install pillow psutil jsonschema certifi pytest -r requirements-proactive.txt
+      - name: Run resident and desktop tests
+        working-directory: src/openlookout
+        run: python -m pytest sprite/proactive vista/benchmarks/desktop -q --tb=line

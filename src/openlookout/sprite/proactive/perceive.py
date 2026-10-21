@@ -14,7 +14,9 @@ from pathlib import Path
 import psutil
 from PIL import Image, ImageGrab
 
-HOME = Path(os.environ.get("SPRITE_HOME", r"E:\OpenLookout\sprite_home"))
+from ..config import sprite_home
+
+HOME = sprite_home()
 DIR = HOME / "perceive"
 FRAMES = DIR / "frames"
 LOG = DIR / "log.jsonl"

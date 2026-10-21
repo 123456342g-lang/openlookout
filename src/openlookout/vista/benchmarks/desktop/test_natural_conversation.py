@@ -736,6 +736,9 @@ def test_repeated_refused_actions_finish_without_claiming_progress(dialogue, tmp
     runtime = TaskRuntime(dialogue, experiment, artifact_dir=tmp_path / "artifacts")
     backend = brain.VisualDirectBackend({"model": "test", "base_url": "https://model.example", "api_key": "test"}, runtime)
     backend.attach(dialogue)
+    # The live default stops a turn after a handful of HTTP calls. This test
+    # is about repeated refusals, so give the streak room to finish on its own.
+    backend.max_segments = 12
     requests = []
 
     def respond(request, timeout):

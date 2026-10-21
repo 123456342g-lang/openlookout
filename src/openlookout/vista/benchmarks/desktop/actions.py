@@ -16,11 +16,12 @@ from typing import Any
 
 import psutil
 
+from sprite.config import sprite_home
 from sprite.i18n import t
 from vista.core.contracts import Capability, Effect, EvidenceKind, Observation, ObservationBundle, ToolReply, ToolSpec, Visual
 from . import historyfacts
 
-HOME = Path(os.environ.get("SPRITE_HOME", r"E:\OpenLookout\sprite_home"))
+HOME = sprite_home()
 JOURNAL = HOME / "undo.jsonl"
 DETACHED = 0x00000008 if os.name == "nt" else 0
 MAX_ACTIONS = 6

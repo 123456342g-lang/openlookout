@@ -1654,10 +1654,10 @@ class ClaudeCodeRunner:
             + builtins
         )
         # local provider：模型档交给本机供应商的别名解析（--model opus 经
-        # ~/.claude/settings.json 的 ANTHROPIC_DEFAULT_OPUS_MODEL 落到具体模型，
-        # 本机当前 = deepseek-v4.1-flash）。不直接传具体模型 id —— Claude Code
-        # 的模型目录不认识它，会把 context window 错算成 200k（真实 1M）并每轮
-        # 报 unrecognized_model；走别名档则窗口/压缩按供应商真实值计算。
+        # ~/.claude/settings.json 的 ANTHROPIC_DEFAULT_OPUS_MODEL 落到具体模型）。
+        # 不直接传具体模型 id —— Claude Code 的模型目录不认识它，会把 context
+        # window 错算成 200k（真实 1M）并每轮报 unrecognized_model；走别名档则
+        # 窗口/压缩按供应商真实值计算。
         if self.provider.name == "local":
             transport_model = "opus"
         elif self.provider.name == "mimo":

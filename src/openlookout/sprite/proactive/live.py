@@ -11,8 +11,12 @@ from pathlib import Path
 
 from .perceive import DIR, NOW
 from .feedback import add_feedback
+from ..config import sprite_home
 from ..i18n import LiveText, t
-from .help import OFFER_OPTIONS
+from .control import menu_spec, paused, quit_requested, apply_menu_action
+from .first_run import provider_problem
+from .help import OFFER_OPTIONS, publish
+from .tray import try_start_tray
 from . import conversation
 from .public_speech import dialog_status, leaks_internal, offer_is_safe_reclaim, user_label
 
@@ -230,7 +234,31 @@ CHILDREN = {
     "gui": ["-m", "sprite.proactive.live", "--gui"],
     "recorder": [str(ROOT.parents[1] / "record_win.py"), "--out", str(DIR / "operations.jsonl"),
                  "--ext-port", "0", "--parent-pid", str(os.getpid()), "--heartbeat", "60"],
+    # Deterministic memory-pressure / suspend / reclaim loop. It does not call the model.
+    "rules": ["-m", "sprite.proactive.rules"],
 }
+
+
+class BrainWaitingForConfig(Exception):
+    """provider.json or the API key is missing. Do not tight-loop brain."""
+
+
+_CONFIG_ANNOUNCED = False
+
+
+def hold_for_config(name: str, exc: BaseException, dropped: dict, fails: dict, now: float, log) -> None:
+    """Schedule a slow retry and say the first-run sentence once."""
+    global _CONFIG_ANNOUNCED
+    if not _CONFIG_ANNOUNCED:
+        _CONFIG_ANNOUNCED = True
+        log(str(exc))
+        try:
+            publish({"id": f"setup-{time.time_ns()}", "t": now, "text": str(exc),
+                     "topic": "setup", "kind": "companion"})
+        except Exception:
+            pass
+    fails[name] = 0
+    dropped[name] = {"retry_at": now + RESPAWN_PROBE_S, "proc": None, "spawned": None}
 # 监督循环每 2 秒看一次子进程。旁边曾有一个同样写死的 SHOW_S，是「气泡挂一小时」
 # 那个 bug 的源头之一；它早已没有任何调用点，删掉而不是留着继续误导人。
 CHECK_S = 2
@@ -439,6 +467,10 @@ def brain_stamp() -> float:
 
 
 def start(name: str) -> subprocess.Popen:
+    if name == "brain":
+        problem = provider_problem()
+        if problem:
+            raise BrainWaitingForConfig(problem)
     exe = sys.executable
     if name == "gui" and os.name == "nt":
         pyw = Path(exe).with_name("pythonw.exe")
@@ -486,6 +518,9 @@ def spawn_children(names=CHILDREN, *, start=start, log=log, now=None) -> tuple:
     for name in names:
         try:
             procs[name] = start(name)
+        except BrainWaitingForConfig as exc:
+            hold_for_config(name, exc, dropped, fails, now, log)
+            continue
         except OSError as exc:
             log(f"{name} 启动期拉起失败（{type(exc).__name__}），不影响其余孩子，"
                 "进入慢速探活")
@@ -561,6 +596,11 @@ def reconcile_exits(procs: dict, fails: dict, *, start=start, log=log,
                 continue
             try:
                 probe = start(name)
+            except BrainWaitingForConfig as exc:
+                hold_for_config(name, exc, dropped, fails, now, log)
+                entry["retry_at"] = now + RESPAWN_PROBE_S
+                entry["proc"] = None
+                continue
             except OSError:
                 # 探活失败静默等待下一轮：磁盘满时不刷日志、不刷 CPU。
                 entry["retry_at"] = now + RESPAWN_PROBE_S
@@ -600,6 +640,10 @@ def reconcile_exits(procs: dict, fails: dict, *, start=start, log=log,
         died_early = name in spawned and now - spawned[name] < SPAWN_OBSERVE_S
         try:
             new = start(name)
+        except BrainWaitingForConfig as exc:
+            procs.pop(name, None)
+            hold_for_config(name, exc, dropped, fails, now, log)
+            continue
         except OSError as exc:
             fails[name] = fails.get(name, 0) + 1
             if fails[name] >= max_fails:
@@ -624,10 +668,25 @@ def reconcile_exits(procs: dict, fails: dict, *, start=start, log=log,
     return fails
 
 
+def service_tick(procs, fails, spawned, dropped, *, start=start, log=log, now=None, home=None) -> str:
+    """One supervisor pass. Returns ``quit`` without starting anything when the user quit."""
+    if quit_requested(home or sprite_home()):
+        log("用户要求退出，停止监督并不再拉起子进程")
+        return "quit"
+    reconcile_exits(procs, fails, start=start, log=log, spawned=spawned, dropped=dropped, now=now)
+    return "ok"
+
+
 def supervise() -> None:
+    # A QUIT file left by the previous process must not block this start.
+    # Quit during this process is a new file written by the window.
+    try:
+        (sprite_home() / "QUIT").unlink(missing_ok=True)
+    except OSError:
+        pass
     procs, spawned, start_fails, dropped = spawn_children()
     seen_all, seen_brain = watched_stamp(), brain_stamp()
-    log("启动：brain（持续视觉上下文）+ 窗口 + 操作记录器")
+    log("启动：brain（持续视觉上下文）+ 窗口 + 操作记录器 + 规则引擎")
 
     def hot_swap(name: str) -> None:
         """代码变了：无条件换一个新 proc（编辑代码本身就是显式复活信号）。
@@ -664,7 +723,8 @@ def supervise() -> None:
             # 风险还有 stat()、start()、poll()。它们都是可恢复的瞬时故障，
             # 而「监督进程活着」本身就是精灵不消失的前提。
             try:
-                reconcile_exits(procs, start_fails, spawned=spawned, dropped=dropped)
+                if service_tick(procs, start_fails, spawned, dropped) == "quit":
+                    break
                 b = brain_stamp()
                 if b != seen_brain:
                     # 只有 brain 自己变了才重启它：它正在积累的视觉上下文比新代码更值钱
@@ -897,8 +957,10 @@ def run_gui() -> None:
                 if offer.get("kind") == "companion":
                     # 闲聊气泡按长度计时。原来固定 180s：一句 20 字的话
                     # 在屏幕上钉三分钟，读完早就走了，看着像卡住不动。
+                    # action_id is set by the rules engine so the bubble can undo.
                     present_say(dict(kind="say", text=offer["text"],
-                                     reply_to=offer.get("reply_to")),
+                                     reply_to=offer.get("reply_to"),
+                                     action_id=offer.get("action_id")),
                                 event_id=str(offer.get("id") or ""))
                 elif offer_status(offer.get("id")) not in SETTLED_OFFER_STATES:
                     # 同意门：offer 到这里只是**把选项摆到用户面前**，不执行。
@@ -942,6 +1004,32 @@ def run_gui() -> None:
 
     w.c.bind("<ButtonPress-1>", on_press, add="+")
     w.c.bind("<ButtonRelease-1>", on_release, add="+")
+
+    menu = tk.Menu(w.c, tearoff=0)
+
+    def on_menu(action: str) -> None:
+        home = DIR.parent
+        apply_menu_action(action, home)
+        if action == "undo":
+            on_undo("last")
+        elif action == "quit":
+            root.destroy()
+
+    def popup(event) -> None:
+        menu.delete(0, "end")
+        for action, label in menu_spec(paused(DIR.parent)):
+            menu.add_command(label=label, command=lambda action=action: on_menu(action))
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            try:
+                menu.grab_release()
+            except Exception:
+                pass
+
+    w.c.bind("<Button-3>", popup)
+    w.c.bind("<Button-2>", popup)
+    try_start_tray(lambda: menu_spec(paused(DIR.parent)), on_menu)
     root.after(300, tick); root.mainloop()
 
 

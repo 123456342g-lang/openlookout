@@ -23,6 +23,23 @@ DEFAULTS = {
 }
 
 
+def sprite_home() -> Path:
+    """Runtime data for the resident sprite. Does not create the directory.
+
+    SPRITE_HOME wins. Otherwise a per-user path. A drive-letter default such as
+    E:\\OpenLookout is a relative path on Linux and would create a junk directory
+    in the working tree, so it is not used.
+    """
+    env = os.environ.get("SPRITE_HOME")
+    if env and str(env).strip():
+        return Path(env)
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA")
+        root = Path(base) if base else Path.home()
+        return root / "OpenLookout" / "sprite_home"
+    return Path.home() / ".openlookout" / "sprite_home"
+
+
 def data_dir() -> Path:
     env = os.environ.get("SPRITE_HOME")
     if env:

@@ -15,11 +15,12 @@ from vista.core.contracts import (
 from . import actions
 from . import permissions
 from .agenda import Agenda
+from sprite.config import sprite_home
 from sprite.proactive.public_speech import leaks_internal
 from vista.core.json import thaw
 
 SHOT_WIDTH, SHOT_QUALITY = 1280, 75
-CURRENT = Path(os.environ.get("SPRITE_HOME", r"E:\OpenLookout\sprite_home")) / "perceive" / "current.json"
+CURRENT = sprite_home() / "perceive" / "current.json"
 
 
 def screen_visual() -> Visual:

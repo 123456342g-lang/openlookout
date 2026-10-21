@@ -32,6 +32,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
+from sprite.config import sprite_home
+
 # ── 参数（全部可复算，不含在线自裁量） ──────────────────────────────
 WINDOW_S = 90.0          # 回看窗口
 SETTLE_S = 6.0           # 距最后一个事件多久算「用户停下了」
@@ -110,8 +112,7 @@ def stop_threshold(app: str, *, benefit_s: float | None = None) -> float:
 #                  既不计正例也不计负例，只从样本量里剔除。
 # 旧代码把 ignored 当负例：一句 companion 气泡只要 180s 没人打字就记成 ignored，
 # 于是“越没人理”越像“观测有效率=0”，反而把门槛放到 1/5（见 learned_benefit_s 注释）。
-OUTCOMES_PATH = Path(os.environ.get("OPENLOOKOUT_PERCEIVE")
-                     or r"E:\OpenLookout\sprite_home\perceive") / "outcomes.jsonl"
+OUTCOMES_PATH = Path(os.environ.get("OPENLOOKOUT_PERCEIVE") or (sprite_home() / "perceive")) / "outcomes.jsonl"
 _POSITIVE = {"accepted", "responded"}
 _NEGATIVE = {"rejected"}
 _NO_EVIDENCE = {"ignored", "unanswered", "acknowledged"}
@@ -529,8 +530,7 @@ def _read_jsonl(path: Path) -> list[dict]:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(argv if argv is not None else sys.argv[1:])
-    ops = Path(argv[argv.index("--ops") + 1]) if "--ops" in argv else Path(
-        r"E:\OpenLookout\sprite_home\perceive\operations.jsonl")
+    ops = Path(argv[argv.index("--ops") + 1]) if "--ops" in argv else sprite_home() / "perceive" / "operations.jsonl"
     report = Path(argv[argv.index("--report") + 1]) if "--report" in argv else None
     events = normalize(_read_jsonl(ops))
     if not events:
