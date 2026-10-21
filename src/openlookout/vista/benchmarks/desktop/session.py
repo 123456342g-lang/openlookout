@@ -6,7 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from PIL import ImageGrab
+from PIL import Image, ImageGrab
 from jsonschema import Draft202012Validator
 
 from vista.core.contracts import (
@@ -24,7 +24,13 @@ CURRENT = sprite_home() / "perceive" / "current.json"
 
 
 def screen_visual() -> Visual:
-    img = ImageGrab.grab().convert("RGB")
+    try:
+        img = ImageGrab.grab().convert("RGB")
+    except OSError:
+        # Headless CI and a display that is not ready must not crash the
+        # session. A blank frame is not a screen change by itself once the
+        # brain has a thumbnail baseline.
+        img = Image.new("RGB", (SHOT_WIDTH, 720), (0, 0, 0))
     h = int(img.height * SHOT_WIDTH / img.width)
     img = img.resize((SHOT_WIDTH, h))
     buf = io.BytesIO(); img.save(buf, "JPEG", quality=SHOT_QUALITY)

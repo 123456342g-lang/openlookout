@@ -1,21 +1,42 @@
 # One-command setup for the resident sprite. Run from the repository root.
+# Pick one Python >= 3.11 (py -3, then python) and use only that interpreter.
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
-function Invoke-Py {
-    param([string[]]$PyArgs)
-    if (Get-Command py -ErrorAction SilentlyContinue) {
-        & py -3.11 @PyArgs
-    } else {
-        & python @PyArgs
+function Test-PythonAtLeast311 {
+    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Prefix)
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & @Prefix -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)"
+        return $LASTEXITCODE -eq 0
+    } catch {
+        return $false
+    } finally {
+        $ErrorActionPreference = $previous
     }
-    return $LASTEXITCODE
 }
 
-$version = Invoke-Py @("-c", "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)")
-if ($version -ne 0) {
+$Py = $null
+if (Get-Command py -ErrorAction SilentlyContinue) {
+    if (Test-PythonAtLeast311 py -3) {
+        $Py = @("py", "-3")
+    }
+}
+if (-not $Py -and (Get-Command python -ErrorAction SilentlyContinue)) {
+    if (Test-PythonAtLeast311 python) {
+        $Py = @("python")
+    }
+}
+if (-not $Py) {
     Write-Error "Python 3.11 or newer is required."
     exit 1
+}
+
+function Invoke-Py {
+    param([string[]]$PyArgs)
+    & @($script:Py + $PyArgs)
+    return $LASTEXITCODE
 }
 
 Set-Location (Join-Path $PSScriptRoot "src\openlookout")

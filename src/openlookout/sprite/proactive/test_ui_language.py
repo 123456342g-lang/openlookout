@@ -32,12 +32,22 @@ def test_override_beats_windows_locale_and_langid():
     assert ui_language(env, locale_name="zh-CN", langid=0x0804) == "en"
 
 
-def test_blank_override_falls_through_to_locale():
+def test_blank_override_falls_through_to_locale(monkeypatch):
+    monkeypatch.setattr(i18n.os, "name", "posix")
     assert ui_language(environ={"OPENLOOKOUT_LANG": "  ", "LANG": "zh_CN.UTF-8"}) == "zh"
     assert ui_language(environ={"OPENLOOKOUT_LANG": "", "LC_ALL": "en_GB.UTF-8"}) == "en"
 
 
-def test_posix_locale_order_and_empty_fallback():
+def test_windows_blank_override_uses_the_display_language_not_lang(monkeypatch):
+    monkeypatch.setattr(i18n.os, "name", "nt")
+    monkeypatch.setattr(i18n, "_query_windows_ui", lambda: (0x0804, "zh-CN"))
+    assert ui_language(environ={"OPENLOOKOUT_LANG": "  ", "LANG": "en_US.UTF-8"}) == "zh"
+    monkeypatch.setattr(i18n, "_query_windows_ui", lambda: (0x0409, "en-US"))
+    assert ui_language(environ={"OPENLOOKOUT_LANG": "", "LANG": "zh_CN.UTF-8"}) == "en"
+
+
+def test_posix_locale_order_and_empty_fallback(monkeypatch):
+    monkeypatch.setattr(i18n.os, "name", "posix")
     assert ui_language(environ={"LC_ALL": "zh_TW.UTF-8", "LANG": "en_US.UTF-8"}) == "zh"
     assert ui_language(environ={"LC_ALL": "C", "LC_MESSAGES": "zh_HK.UTF-8"}) == "zh"
     assert ui_language(environ={"LC_ALL": "POSIX", "LANG": "C"}, process_locale="") == "en"

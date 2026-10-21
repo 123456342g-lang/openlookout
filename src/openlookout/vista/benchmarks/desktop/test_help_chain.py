@@ -53,6 +53,16 @@ def test_undo_path_is_wired_to_a_real_undo():
 
 
 # ---------------------------------------------------------------- 2. 结论要能回到气泡
+def test_session_starts_when_the_display_cannot_be_captured(monkeypatch):
+    def boom():
+        raise OSError("X connection failed: error 5")
+
+    monkeypatch.setattr(sessmod.ImageGrab, "grab", boom)
+    created = DesktopSession("x", {})
+    assert created.current_visual.data
+    assert created.current_visual.width == sessmod.SHOT_WIDTH
+
+
 def test_final_answer_is_actually_produced():
     """session.result() 的 final 是回显给用户的那句话——不能永远是空。"""
     s = DesktopSession("做点什么", {})

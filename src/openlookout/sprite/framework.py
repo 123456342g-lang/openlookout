@@ -207,6 +207,12 @@ class Engine:
         cands.sort(key=lambda a: (a.risk == "high", -a.relief, a.blast_bytes))
         remaining = pb.need
         floor = pb.need * self.gate.get("min_gain_frac", 0.05) if pb.need else 0
+        # A multi-GB memory hole makes 5% larger than any one reversible
+        # suspend, so a ~100MB browser was skipped as "marginal" and the
+        # pressure was never reported. Cap that floor for memory only.
+        # Other kinds keep the plain 5% rule.
+        if pb.kind == "mem":
+            floor = min(floor, 100.0)
         for a in cands:
             tr = self.ledger.trust(a.kind)
             if a.risk == "high" or a.reversible not in ("full", "regen"):

@@ -50,6 +50,8 @@ class RealProbe:
     def __init__(self, disks=None, clock=None):
         import time
         self.clock = clock or time.time; self.fg = ""; self.win = None
+        self._cpu: dict[int, tuple[float, float]] = {}
+        self._idle: dict[int, float] = {}
         if os.name == "nt" or os.environ.get("SPRITE_FORCE_WINPROBE"):
             from .winprobe import WinProbe
             self.win = WinProbe(self.clock)
@@ -66,19 +68,65 @@ class RealProbe:
         info = {l.split(":")[0]: int(l.split()[1]) for l in open("/proc/meminfo")}
         return info["MemTotal"] / 1024, info["MemAvailable"] / 1024
 
+    def _note_idle(self, pid: int, now: float, cpu_s: float) -> float:
+        """Seconds this pid has stayed under 5% of one core since the last sample.
+
+        The first sample is 0. A refresh closer than one second does not move
+        the baseline, so it cannot wipe idle that is still accumulating.
+        """
+        prev = self._cpu.get(pid)
+        idle = self._idle.get(pid, 0.0)
+        if prev is None:
+            self._cpu[pid] = (now, cpu_s)
+            self._idle[pid] = 0.0
+            return 0.0
+        prev_t, prev_cpu = prev
+        dt = now - prev_t
+        if dt < 1.0:
+            return idle
+        if (cpu_s - prev_cpu) / dt >= 0.05:
+            idle = 0.0
+        else:
+            idle += dt
+        self._cpu[pid] = (now, cpu_s)
+        self._idle[pid] = idle
+        return idle
+
+    def _cpu_seconds(self, cpu) -> float | None:
+        if cpu is None:
+            return None
+        user = getattr(cpu, "user", None)
+        system = getattr(cpu, "system", None)
+        if user is None and isinstance(cpu, (tuple, list)) and len(cpu) >= 2:
+            user, system = cpu[0], cpu[1]
+        if user is None or system is None:
+            return None
+        return float(user) + float(system)
+
     def _procs(self):
         if self.win is not None:
             procs, self.fg = self.win.procs(); return procs
         try: import psutil
         except ImportError: return []
         out = []
-        for p in psutil.process_iter(["pid", "name", "memory_info", "ppid", "cmdline", "cwd"]):
+        seen: set[int] = set()
+        now = self.clock()
+        for p in psutil.process_iter(["pid", "name", "memory_info", "ppid", "cmdline", "cwd", "cpu_times"]):
             try:
                 i = p.info
-                out.append(Proc(i["pid"], (i["name"] or "").lower().removesuffix(".exe"), i["memory_info"].rss / 2**20,
-                                cmdline=" ".join(i["cmdline"] or []), cwd=i["cwd"] or "", parent_alive=psutil.pid_exists(i["ppid"])))
+                pid = int(i["pid"])
+                seen.add(pid)
+                cpu_s = self._cpu_seconds(i.get("cpu_times"))
+                idle_s = 0.0 if cpu_s is None else self._note_idle(pid, now, cpu_s)
+                out.append(Proc(pid, (i["name"] or "").lower().removesuffix(".exe"), i["memory_info"].rss / 2**20,
+                                idle_s=idle_s, cmdline=" ".join(i["cmdline"] or []), cwd=i["cwd"] or "",
+                                parent_alive=psutil.pid_exists(i["ppid"])))
             except Exception: continue
-        return out        # idle_s / has_window / foreground_tree 需要窗口与 CPU 历史，真实版在 Windows 上补（未验证）
+        for pid in list(self._idle):
+            if pid not in seen:
+                self._idle.pop(pid, None)
+                self._cpu.pop(pid, None)
+        return out        # has_window / foreground_tree 需要窗口信息；Linux 上这两项保持默认（不把未知当成前台）
 
     def snapshot(self) -> Snapshot:
         t, a = self._mem()

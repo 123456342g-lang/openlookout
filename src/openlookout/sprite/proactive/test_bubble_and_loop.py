@@ -317,7 +317,10 @@ def test_text_feedback_still_wakes_the_loop_without_an_image():
     否则回话要等下一个无关事件（10-13 实测 52.8s 延迟的同类回归）。"""
     src = _src(BRAIN)
     assert "if fb and feedback_needs_visual(fb):" in src, "附图条件收敛到指代词判定"
-    assert "timing_due or fb or heartbeat_due" in src, "fb 仍须独立唤醒循环"
+    start = src.index("if not model_turn_due(")
+    gate = src[start:src.index("):", start)]
+    assert "feedback=fb" in gate, "fb 仍须独立唤醒循环"
+    assert "heartbeat_due" not in gate and "history_due" not in gate
 
 
 def test_visual_tier_plain_heartbeat_within_recheck_is_text_only():

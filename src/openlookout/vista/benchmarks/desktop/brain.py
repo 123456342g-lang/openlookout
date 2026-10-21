@@ -35,19 +35,8 @@ OFFERS = PERCEIVE / "offers.jsonl"
 PROJECT = Path(__file__).resolve().parents[3]
 CHANGE_MIN = 0.01          # 屏幕缩略图平均差异超 1% 就重新判断
 MIN_GAP_S = 5              # 页面切换后尽快跟上；节流交给模型判断和输出闸
-# 兜底心跳。实测（10-13 17:03~17:09）：精灵说完一句奥特曼话题后，接下来
-# 四轮全部是 quiet，用户看到的感受是「启动一次说一次话，就不再说了」。
-# 原因不是它不想说，是**根本没有轮次可醒**：屏幕静止 → screen/window 都不 due，
-# timing 事件边界几小时不 fire，兜底心跳又是 900s。于是最长可以静默 15 分钟，
-# 而一轮本身还要 30~100s。
-#
-# 心跳的作用是「让模型有机会重新判断」，不是「逼它说话」——醒了之后开口与否
-# 仍然完全由 companion 的 kind 决定。所以这里可以调短：调短只是提高被审的频率，
-# 不会制造它不想说的话。
-#
-# 为什么不是 60s：每轮真实耗时 30~100s（host-native 拉起 claude.exe + MCP 连接），
-# 心跳小于一轮耗时会退化成连续排队。这里取 240s——保证「任何时候静默不超过
-# 约 4 分钟 + 一轮耗时」，同时留出足够空档。
+# 心跳不再单独叫醒模型。静止且没有任何触发时，调用次数应接近零。
+# HEARTBEAT_S 只给「已经由别的触发打开的轮」标注距上一轮过了多久。
 HEARTBEAT_S = 240
 # 带图模型轮是最贵的资源。高频感知由 2s 本地哨兵免费完成（缩略图 diff、
 # 窗口切换、键鼠 idle、操作流断点、C盘/内存）；只有强视觉信号才把新截图
@@ -116,7 +105,36 @@ def thumb(visual) -> list[int]:
 
 
 def changed(a, b) -> bool:
-    return a is None or sum(abs(x - y) for x, y in zip(a, b)) / (len(a) * 255) >= CHANGE_MIN
+    """Meaningful thumbnail change. A missing baseline is not a change."""
+    if not a or not b:
+        return False
+    return sum(abs(x - y) for x, y in zip(a, b)) / (len(a) * 255) >= CHANGE_MIN
+
+
+def model_turn_due(
+    *,
+    screen_due: bool = False,
+    window_due: bool = False,
+    background_due: bool = False,
+    maintenance_due: bool = False,
+    timing_due: bool = False,
+    feedback: str = "",
+    return_due: bool = False,
+    continue_due: bool = False,
+    goal_due: bool = False,
+    reply_due: bool = False,
+) -> bool:
+    """True only when this moment should call the model.
+
+    A still screen, the heartbeat timer, and the mere existence of history
+    files are not triggers. Those facts can still be attached to a turn that
+    something else already opened.
+    """
+    return bool(
+        screen_due or window_due or background_due or maintenance_due
+        or timing_due or feedback or return_due or continue_due
+        or goal_due or reply_due
+    )
 
 
 @dataclass(frozen=True)
@@ -1479,7 +1497,7 @@ class ContinuationTracker:
 
 CLAUDE_BACKENDS = {"claude", "host"}
 # Historical aliases that still mean the direct HTTP path, including an empty value.
-BACKEND_DIRECT_VALUES = {"", "1", "true", "yes", "on", "direct", "mimo"}
+BACKEND_DIRECT_VALUES = {"", "1", "true", "yes", "on", "direct"}
 
 
 def backend_kind(env=None) -> str:
@@ -1740,11 +1758,16 @@ def run() -> None:
     initial_now = time.time()
     initial_maintenance = maintenance.observe(initial_now, refresh=True)
     initial_revision = agenda.revision
-    print("[brain] initial turn: preparing VISTA input", flush=True)
-    initial_result = backend.run(runtime.prepare_input(Phase.INITIAL, public_text=conversation_fact(
-        idle_s=watching.idle_seconds(), now=time.time()) + "\n" + history_line
-        + "\n" + initial_maintenance + "\n" + agenda.context(),
-        observation=session.observe(backend.screen_sample.visual) if live_screen is not None else None))
+    startup_feedback = new_feedback(backend.feedback_since if live_screen else initial_now)
+    if model_turn_due(maintenance_due=bool(str(initial_maintenance).strip()), feedback=startup_feedback):
+        print("[brain] initial turn: preparing VISTA input", flush=True)
+        initial_result = backend.run(runtime.prepare_input(Phase.INITIAL, public_text=conversation_fact(
+            idle_s=watching.idle_seconds(), now=time.time()) + "\n" + history_line
+            + "\n" + initial_maintenance + "\n" + agenda.context(),
+            observation=session.observe(backend.screen_sample.visual) if live_screen is not None else None))
+    else:
+        print("[brain] waiting: screen unchanged and no trigger, so no model call", flush=True)
+        initial_result = DirectReply(boundary=None)
     if not isinstance(backend, VisualDirectBackend) and initial_result.boundary is not None:
         agenda.mark_delivered(initial_revision)
     # 初始轮是建立上下文，不是操作流断点：教练开口闸关闭（quiet 记实例/退休
@@ -1755,7 +1778,14 @@ def run() -> None:
     save_current(session)
     if initial_result.boundary is not None:
         maintenance.consume()
-    last_thumb, last_turn, last_fb = None, time.time(), backend.feedback_since if live_screen else time.time()
+    if live_screen is not None and getattr(backend, "screen_sample", None) is not None:
+        seeded_thumb = backend.screen_sample.thumbnail
+    else:
+        try:
+            seeded_thumb = thumb(screen_visual())
+        except Exception:
+            seeded_thumb = None
+    last_thumb, last_turn, last_fb = seeded_thumb, time.time(), backend.feedback_since if live_screen else time.time()
     # 上一次**真的把截图送进模型**的时刻：纯文本轮不刷它，静止屏幕靠
     # VISUAL_RECHECK_S 兜底刷新视觉上下文。
     last_visual_turn = time.time()
@@ -1780,6 +1810,8 @@ def run() -> None:
             sample = live_screen.latest() if live_screen is not None else None
             vis = sample.visual if sample is not None else screen_visual()
             th = thumb(vis)
+            if last_thumb is None:
+                last_thumb = th
             sig = watching.foreground()
             window_key = (sig.get("proc", ""), sig.get("title", ""))
             window_due = last_window is not None and window_key != last_window and now - last_turn >= MIN_GAP_S
@@ -1869,7 +1901,18 @@ def run() -> None:
                 fb=fb, return_due=return_due, reply_due=reply_due,
                 now=now, last_visual_turn=last_visual_turn,
                 reply_text=pending_reply_text(now) if reply_due else None)
-            if not (screen_due or window_due or background_due or maintenance_due or history_due or timing_due or fb or heartbeat_due or return_due or continue_due or goal_due or reply_due):
+            if not model_turn_due(
+                screen_due=screen_due,
+                window_due=window_due,
+                background_due=background_due,
+                maintenance_due=maintenance_due,
+                timing_due=timing_due,
+                feedback=fb,
+                return_due=return_due,
+                continue_due=continue_due,
+                goal_due=bool(goal_due),
+                reply_due=reply_due,
+            ):
                 continue
             if continue_due:
                 continuations.consume(step_key, evidence_revision)
