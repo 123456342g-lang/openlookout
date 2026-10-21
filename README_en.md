@@ -71,7 +71,9 @@ When free memory is under 10%, a background browser that has been idle for about
 
 ## Cost
 
-An unchanged idle screen does not call the model. A heartbeat, or the mere presence of history files, is not a trigger. Feedback, a maintenance signal, a continuation, a goal, or a pending reply still opens a turn. An outbound image whose long edge is over 768 pixels is downscaled to JPEG first. Later requests in the same turn omit the full screenshot when the screen did not change. Crops returned by tools stay. A turn makes at most 4 HTTP calls by default (`OPENLOOKOUT_MAX_CALLS`, clamped to 1..8).
+An unchanged idle screen does not call the model. A heartbeat, or the mere presence of history files, is not a trigger. Feedback, a maintenance signal, a continuation, a goal, or a pending reply still opens a turn. An outbound image whose long edge is over 768 pixels is downscaled to JPEG first. The first request of a direct session includes the current screenshot. Later requests in the same turn omit the full screenshot when the screen did not change. Crops returned by tools stay. Older messages are dropped by an estimated token budget, not by message count, and the active turn is kept. The direct session is stored at `companion/direct_history.json` and resumed after a brain restart.
+
+One HTTP call times out after 180 seconds. A 429, 500, 502, 503, timeout, or body that is not JSON is retried twice, after 2 seconds and then 8 seconds. Those retries count toward the per-turn HTTP cap. A turn makes at most 4 HTTP calls by default (`OPENLOOKOUT_MAX_CALLS`, clamped to 1..8). After the 429 retries are used up, the turn stops and a 600 second cooldown applies. If a forced companion step records no decision, one repair call is allowed; it is skipped when the cap is already spent.
 
 ## Config
 
@@ -80,7 +82,7 @@ An unchanged idle screen does not call the model. A heartbeat, or the mere prese
 | `OPENLOOKOUT_BACKEND` | Empty or `direct`: HTTP. `claude` / `host`: local Claude Code. `mimo` is no longer an alias; unknown values, including that one, stay on direct. |
 | `OPENLOOKOUT_MODEL` | Overrides `model` in `provider.json`. Blank uses the file. |
 | `OPENLOOKOUT_LANG` | `zh` or `en`. Blank follows the Windows display language: Chinese for `zh*`, English otherwise. |
-| `OPENLOOKOUT_MAX_CALLS` | HTTP calls per turn. Default 4, clamped to 1..8. |
+| `OPENLOOKOUT_MAX_CALLS` | HTTP calls per turn, including 429 and transient retries. Default 4, clamped to 1..8. |
 | `SPRITE_API_KEY` | Required and non-empty. `ollama` is a valid placeholder for local Ollama. |
 | `provider.json` | `protocol`, `base_url`, `model`. Other keys are ignored. |
 

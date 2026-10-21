@@ -648,7 +648,7 @@ def test_old_snapshot_read_cannot_mark_new_history_context_as_explored(dialogue,
         runtime.close()
 
 
-def test_history_window_keeps_current_and_previous_plain_turn_only():
+def test_history_window_keeps_small_turns_and_drops_over_budget_text():
     backend = brain.VisualDirectBackend({})
     backend.history = []
     for index in range(6):
@@ -658,9 +658,31 @@ def test_history_window_keeps_current_and_previous_plain_turn_only():
             {"role": "user", "content": [{"type": "tool_result", "tool_use_id": f"call-{index}"}]},
         ])
     messages = backend._messages()
-    assert messages[0]["content"][0]["text"] == "turn-4"
+    assert messages[0]["content"][0]["text"] == "turn-0"
     assert messages[-1]["content"][0]["tool_use_id"] == "call-5"
-    assert len(messages) <= 6
+    assert brain.estimate_messages_tokens(messages) <= brain.CONTEXT_TOKEN_BUDGET
+
+    huge = "H" * (brain.CONTEXT_TOKEN_BUDGET * 8)
+    backend.history = [
+        {"role": "user", "content": [{"type": "text", "text": huge}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "x",
+                                      "content": [{"type": "text", "text": "hidden"}]}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "mid"}]},
+        {"role": "user", "content": [{"type": "text", "text": "tail"}]},
+    ]
+    messages = backend._messages()
+    assert messages[0]["content"][0].get("type") != "tool_result"
+    assert messages[-1]["content"][0]["text"] == "tail"
+    assert all(huge[:40] not in json.dumps(message) for message in messages)
+
+    backend.turn_starts = [1]
+    backend.history = [
+        {"role": "user", "content": [{"type": "text", "text": huge}]},
+        {"role": "user", "content": [{"type": "text", "text": "active-turn"}]},
+    ]
+    messages = backend._messages()
+    assert messages[0]["content"][0]["text"] == "active-turn"
+    assert len(messages) == 1
 
 
 def test_scene_updates_preserve_active_turn_evidence(dialogue, tmp_path):
@@ -687,7 +709,10 @@ def test_scene_updates_preserve_active_turn_evidence(dialogue, tmp_path):
                    for message in messages for block in message["content"]) == 1
         assert messages[-1]["content"][0]["text"] == "finish with companion"
         backend._append_input(runtime.prepare_input(Phase.STEP, public_text="next decision"))
-        assert len(backend._messages()) <= 16
+        window = backend._messages()
+        assert any("next decision" in (block.get("text") or "")
+                   for message in window for block in message["content"])
+        assert brain.estimate_messages_tokens(window) <= brain.CONTEXT_TOKEN_BUDGET
     finally:
         runtime.close()
 
