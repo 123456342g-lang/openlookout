@@ -279,12 +279,45 @@ def _system_text(system) -> str:
     return ""
 
 
+def _merge_user_content(left, right):
+    if isinstance(left, str) and isinstance(right, str):
+        if not left:
+            return right
+        if not right:
+            return left
+        return left + "\n" + right
+
+    def as_parts(content):
+        if isinstance(content, str):
+            return [{"type": "text", "text": content}] if content else []
+        if isinstance(content, list):
+            return list(content)
+        return [{"type": "text", "text": str(content)}]
+
+    return as_parts(left) + as_parts(right)
+
+
+def _merge_consecutive_users(messages: list[dict]) -> list[dict]:
+    """Strict chat servers reject back-to-back user roles."""
+    merged = []
+    for message in messages:
+        if merged and merged[-1].get("role") == "user" and message.get("role") == "user":
+            merged[-1] = {
+                "role": "user",
+                "content": _merge_user_content(merged[-1].get("content"), message.get("content")),
+            }
+        else:
+            merged.append(message)
+    return merged
+
+
 def to_openai(body: dict) -> dict:
     messages = []
     system = _system_text(body.get("system"))
     if system.strip():
         messages.append({"role": "system", "content": system})
     messages.extend(_convert_messages(body.get("messages") or []))
+    messages = _merge_consecutive_users(messages)
     payload: dict = {"model": body.get("model"), "messages": messages}
     if body.get("max_tokens") is not None:
         payload["max_tokens"] = body["max_tokens"]
@@ -297,18 +330,22 @@ def to_openai(body: dict) -> dict:
     return payload
 
 
-def _parse_arguments(raw) -> dict:
+def _parse_arguments(raw) -> tuple[dict, str | None]:
+    """Return arguments and a parse error. Bad JSON is not stuffed into ``raw``."""
     if isinstance(raw, dict):
-        return raw
+        return raw, None
     if not isinstance(raw, str) or not raw.strip():
-        return {}
+        return {}, None
     try:
         value = json.loads(raw)
-    except json.JSONDecodeError:
-        return {"raw": raw}
+    except json.JSONDecodeError as exc:
+        return {}, (
+            f"Could not parse tool arguments as JSON "
+            f"(line {exc.lineno}, column {exc.colno}): {exc.msg}"
+        )
     if isinstance(value, dict):
-        return value
-    return {"raw": raw}
+        return value, None
+    return {}, f"Tool arguments must be a JSON object, got {type(value).__name__}."
 
 
 def _openai_text(content) -> str:
@@ -348,20 +385,34 @@ def openai_to_anthropic(payload: dict) -> dict:
     calls = message.get("tool_calls") or []
     for index, call in enumerate(calls):
         function = call.get("function") or {}
-        blocks.append({
+        arguments, argument_error = _parse_arguments(function.get("arguments"))
+        block = {
             "type": "tool_use",
             "id": str(call.get("id") or f"call_{index + 1}"),
             "name": function.get("name") or "",
-            "input": _parse_arguments(function.get("arguments")),
-        })
+            "input": arguments,
+        }
+        if argument_error:
+            block["argument_error"] = argument_error
+        blocks.append(block)
     usage = payload.get("usage") or {}
+    details = usage.get("prompt_tokens_details")
+    if not isinstance(details, dict):
+        details = {}
+    mapped = {
+        "input_tokens": usage.get("prompt_tokens", usage.get("input_tokens")),
+        "output_tokens": usage.get("completion_tokens", usage.get("output_tokens")),
+    }
+    cached = details.get("cached_tokens", usage.get("cache_read_input_tokens"))
+    if cached is not None:
+        mapped["cache_read_input_tokens"] = cached
+    created = usage.get("cache_creation_input_tokens")
+    if created is not None:
+        mapped["cache_creation_input_tokens"] = created
     return {
         "content": blocks,
         "stop_reason": _stop_reason(finish, bool(calls)),
-        "usage": {
-            "input_tokens": usage.get("prompt_tokens", usage.get("input_tokens")),
-            "output_tokens": usage.get("completion_tokens", usage.get("output_tokens")),
-        },
+        "usage": mapped,
     }
 
 

@@ -114,8 +114,20 @@ def test_tool_choice_mapping_and_invalid_arguments():
     })
     assert turned["stop_reason"] == "tool_use"
     assert turned["content"][0]["type"] == "tool_use"
-    assert turned["content"][0]["input"] == {"raw": "not-json"}
+    assert turned["content"][0]["input"] == {}
+    assert "JSON" in turned["content"][0]["argument_error"]
+    assert "raw" not in turned["content"][0]["input"]
     assert turned["usage"] == {"input_tokens": 3, "output_tokens": 1}
+    cached = chat.openai_to_anthropic({
+        "choices": [{"finish_reason": "stop", "message": {"content": "ok"}}],
+        "usage": {"prompt_tokens": 9, "completion_tokens": 4,
+                  "prompt_tokens_details": {"cached_tokens": 5},
+                  "cache_creation_input_tokens": 2},
+    })
+    assert cached["usage"]["input_tokens"] == 9
+    assert cached["usage"]["output_tokens"] == 4
+    assert cached["usage"]["cache_read_input_tokens"] == 5
+    assert cached["usage"]["cache_creation_input_tokens"] == 2
     stopped = chat.openai_to_anthropic({
         "choices": [{"finish_reason": "length", "message": {"content": "partial"}}],
     })
@@ -209,6 +221,26 @@ def test_strip_images_keeps_tool_crops():
     nested = stripped[0]["content"][1]["content"]
     assert nested[0]["type"] == "image"
     assert messages[0]["content"][0]["type"] == "image"
+
+
+def test_consecutive_user_messages_merge_and_tool_roles_stay_split():
+    payload = chat.to_openai({
+        "model": "m",
+        "messages": [
+            {"role": "user", "content": "first"},
+            {"role": "user", "content": [{"type": "text", "text": "second"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
+            {"role": "user", "content": "third"},
+            {"role": "user", "content": "fourth"},
+        ],
+    })
+    roles = [message["role"] for message in payload["messages"]]
+    assert roles == ["user", "assistant", "user"]
+    assert payload["messages"][0]["content"] == [
+        {"type": "text", "text": "first"},
+        {"type": "text", "text": "second"},
+    ]
+    assert payload["messages"][2]["content"] == "third\nfourth"
 
 
 def test_model_call_budget_defaults_to_four_and_caps_at_eight(monkeypatch):

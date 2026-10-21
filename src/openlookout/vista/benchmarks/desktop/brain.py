@@ -6,7 +6,7 @@
 """
 from __future__ import annotations
 
-import json, math, os, shutil, threading, time
+import base64, json, math, os, shutil, socket, threading, time
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -817,38 +817,154 @@ class ModelRateLimited(RuntimeError):
     """The provider answered 429. Stop this turn; do not spin."""
 
 
-# Two sleeps, three HTTP tries, then give up. Not an open-ended 60-retry.
+class ModelCallBudgetExhausted(RuntimeError):
+    """This turn used its HTTP cap, including retries."""
+
+
+# Two sleeps, three HTTP tries, then give up. Same backoff for 429 and for
+# 500/502/503, timeouts, and a body that is not JSON.
 RATE_LIMIT_BACKOFF_S = (2.0, 8.0)
 RATE_LIMIT_COOLDOWN_S = 600.0
 RATE_LIMIT_SAY = LiveText("rate_limit")
+MODEL_HTTP_TIMEOUT_S = 180
+TRANSIENT_HTTP = frozenset({500, 502, 503})
+# What one direct-session request may carry. Images are a flat estimate;
+# text is about four characters per token. The active turn is never dropped.
+CONTEXT_TOKEN_BUDGET = 24000
+IMAGE_TOKEN_ESTIMATE = 1600
 
 
-def model_response(request, *, sleep=time.sleep):
+class TurnCallBudget:
+    """Counts every model HTTP attempt in one turn, including retries."""
+
+    def __init__(self, limit: int | None):
+        self.limit = None if limit is None else max(0, int(limit))
+        self.used = 0
+        self.repair_granted = False
+
+    def has_room(self) -> bool:
+        return self.limit is None or self.used < self.limit
+
+    def charge(self) -> None:
+        if not self.has_room():
+            raise ModelCallBudgetExhausted(f"本轮模型调用已达上限 {self.limit}（含重试）。")
+        self.used += 1
+
+    def grant_repair(self) -> bool:
+        """One companion repair may pass the cap. Earlier retries can consume it."""
+        if self.repair_granted:
+            return False
+        self.repair_granted = True
+        if self.limit is not None:
+            self.limit += 1
+        return self.has_room()
+
+
+def _is_timeout(error: BaseException) -> bool:
+    if isinstance(error, (TimeoutError, socket.timeout)):
+        return True
+    reason = getattr(error, "reason", None)
+    return isinstance(reason, (TimeoutError, socket.timeout))
+
+
+def estimate_message_tokens(message: dict) -> int:
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, str):
+        return max(1, len(content) // 4)
+    if not isinstance(content, list):
+        return 1
+    total = 0
+    for block in content:
+        if not isinstance(block, dict):
+            total += 1
+            continue
+        kind = block.get("type")
+        if kind == "image":
+            total += IMAGE_TOKEN_ESTIMATE
+        elif kind == "text":
+            total += max(1, len(str(block.get("text") or "")) // 4)
+        elif kind == "tool_use":
+            raw = json.dumps(block.get("input", {}), ensure_ascii=False, default=str)
+            total += max(1, len(raw) // 4) + 4
+        elif kind == "tool_result":
+            total += estimate_message_tokens({"content": block.get("content")}) + 4
+        else:
+            raw = json.dumps(block, ensure_ascii=False, default=str)
+            total += max(1, len(raw) // 4)
+    return max(1, total)
+
+
+def estimate_messages_tokens(messages) -> int:
+    return sum(estimate_message_tokens(message) for message in messages)
+
+
+def model_response(request, *, sleep=None, budget: TurnCallBudget | None = None, timeout: float | None = None):
     import http.client
     import ssl
     import urllib.error
     import urllib.request
 
+    if sleep is None:
+        sleep = time.sleep
+    if timeout is None:
+        timeout = MODEL_HTTP_TIMEOUT_S
     transport_attempt = 0
     rate_attempt = 0
+    transient_attempt = 0
+
+    def budget_blocks_retry() -> bool:
+        return budget is not None and not budget.has_room()
+
+    def backoff(kind: str, attempt: int) -> None:
+        delay = RATE_LIMIT_BACKOFF_S[attempt]
+        sleep(delay)
+        print(f"[brain] model {kind}; backoff {delay}s "
+              f"({attempt + 1}/{len(RATE_LIMIT_BACKOFF_S)})", flush=True)
+
+    def transient_or_raise(error: BaseException, kind: str) -> None:
+        nonlocal transient_attempt
+        if transient_attempt >= len(RATE_LIMIT_BACKOFF_S):
+            raise error
+        if budget_blocks_retry():
+            raise ModelCallBudgetExhausted(f"本轮模型调用已达上限 {budget.limit}（含重试）。") from error
+        backoff(kind, transient_attempt)
+        transient_attempt += 1
+
     while True:
+        if budget is not None:
+            budget.charge()
         try:
-            with urllib.request.urlopen(request, timeout=180) as response:
-                return json.loads(response.read().decode())
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                raw = response.read().decode()
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError as error:
+                transient_or_raise(error, "bad JSON")
         except urllib.error.HTTPError as error:
-            if getattr(error, "code", None) != 429:
-                raise
-            if rate_attempt >= len(RATE_LIMIT_BACKOFF_S):
-                raise ModelRateLimited("模型服务暂时限流，本轮不再重试。") from error
-            sleep(RATE_LIMIT_BACKOFF_S[rate_attempt])
-            rate_attempt += 1
-            print(f"[brain] model rate-limited; backoff {RATE_LIMIT_BACKOFF_S[rate_attempt - 1]}s "
-                  f"({rate_attempt}/{len(RATE_LIMIT_BACKOFF_S)})", flush=True)
+            code = getattr(error, "code", None)
+            if code == 429:
+                if rate_attempt >= len(RATE_LIMIT_BACKOFF_S):
+                    raise ModelRateLimited("模型服务暂时限流，本轮不再重试。") from error
+                if budget_blocks_retry():
+                    raise ModelCallBudgetExhausted(
+                        f"本轮模型调用已达上限 {budget.limit}（含重试）。") from error
+                backoff("rate-limited", rate_attempt)
+                rate_attempt += 1
+                continue
+            if code in TRANSIENT_HTTP:
+                transient_or_raise(error, f"HTTP {code}")
+                continue
+            raise
         except urllib.error.URLError as error:
+            if _is_timeout(error):
+                transient_or_raise(error, "timeout")
+                continue
             if transport_attempt or not isinstance(error.reason, (ssl.SSLEOFError, ConnectionResetError)):
                 raise
             transport_attempt += 1
             print(f"[brain] model transport interrupted: {type(error.reason).__name__}; retrying request once", flush=True)
+        except (TimeoutError, socket.timeout) as error:
+            transient_or_raise(error, "timeout")
         except http.client.RemoteDisconnected:
             if transport_attempt:
                 raise
@@ -856,11 +972,11 @@ def model_response(request, *, sleep=time.sleep):
             print("[brain] model transport interrupted: RemoteDisconnected; retrying request once", flush=True)
 
 
-def post_model(cfg: dict, body: dict):
+def post_model(cfg: dict, body: dict, *, budget: TurnCallBudget | None = None):
     """Send one model turn and return an Anthropic-shaped payload plus the request."""
     protocol = str(cfg.get("protocol") or "anthropic")
     request = build_request(cfg, body)
-    payload = model_response(request)
+    payload = model_response(request, budget=budget)
     return normalize_response(protocol, payload), request
 
 
@@ -926,7 +1042,8 @@ class _LegacyDirectBackend:
         prompt = _extract_text(task_input)
         if not prompt:
             return DirectReply("")
-        msgs = self.history[-8:] + [{"role": "user", "content": prompt}]
+        self.history.append({"role": "user", "content": prompt})
+        msgs = self.history[-8:]
         body = {"model": self.cfg["model"], "max_tokens": 2048, "messages": msgs}
         try:
             req = build_request(self.cfg, body)
@@ -1054,6 +1171,11 @@ class VisualDirectBackend:
         # 全部占位，防止「新图省了、上一轮那张图还在」继续花图像 token。
         # _refresh_screen 在调查中收到新画面时清除（那一刻起本轮恢复带图）。
         self.turn_without_visual = False
+        self._screen_sent = False
+        self.history_file = None
+        self._call_budget: TurnCallBudget | None = None
+        self._repair_left = 1
+        self._repair_pending = False
         self.stale_state: dict = {}
         self.rate_limited_until = 0.0
         self.rate_limit_said = False
@@ -1119,16 +1241,143 @@ class VisualDirectBackend:
         self.turn_without_visual = False
         return True
 
+    def _opening_visual(self):
+        sample = getattr(self, "screen_sample", None)
+        visual = getattr(sample, "visual", None) if sample is not None else None
+        if getattr(visual, "data", None):
+            return visual
+        owners = [self.session]
+        if self.runtime is not None:
+            owners.append(getattr(self.runtime, "session", None))
+        for owner in owners:
+            visual = getattr(owner, "current_visual", None) if owner is not None else None
+            if getattr(visual, "data", None):
+                return visual
+        return None
+
+    def _image_blocks(self, visual) -> list[dict]:
+        return [
+            {"type": "text", "text": "CURRENT source_id=" + str(visual.source_id)},
+            {"type": "image", "source": {
+                "type": "base64",
+                "media_type": visual.mime_type,
+                "data": base64.b64encode(visual.data).decode("ascii"),
+            }},
+        ]
+
+    def _history_has_image(self) -> bool:
+        for message in self.history:
+            content = message.get("content")
+            if isinstance(content, list) and any(
+                    isinstance(block, dict) and block.get("type") == "image" for block in content):
+                return True
+        return False
+
+    def _store_opening_screenshot(self) -> None:
+        """Keep the first screen in history so a restart can still resume it."""
+        if getattr(self, "_screen_sent", False) or self._history_has_image():
+            return
+        visual = self._opening_visual()
+        if visual is None:
+            return
+        blocks = self._image_blocks(visual)
+        for message in reversed(self.history):
+            content = message.get("content")
+            if message.get("role") != "user" or not isinstance(content, list):
+                continue
+            if any(isinstance(block, dict) and block.get("type") == "tool_result" for block in content):
+                continue
+            message["content"] = blocks + content
+            return
+
+    def _restore_opening_image(self, messages: list[dict]) -> list[dict]:
+        """Segment 0 of a session that has not yet sent a screen must include one."""
+        if getattr(self, "_screen_sent", False):
+            return messages
+        has_image = any(
+            isinstance(block, dict) and block.get("type") == "image"
+            for message in messages
+            for block in (message.get("content") if isinstance(message.get("content"), list) else []))
+        if has_image:
+            self._screen_sent = True
+            return messages
+        visual = self._opening_visual()
+        if visual is None:
+            return messages
+        blocks = self._image_blocks(visual)
+        if messages and messages[0].get("role") == "user" and isinstance(messages[0].get("content"), list):
+            messages[0] = dict(messages[0], content=blocks + list(messages[0]["content"]))
+        else:
+            messages.insert(0, {"role": "user", "content": list(blocks)})
+        self._screen_sent = True
+        return messages
+
+    def _schedule_terminal_repair(self, segment: int, force_companion: bool,
+                                  before_decisions: int, boundary) -> bool:
+        """One extra companion call when the closing step recorded no decision."""
+        if boundary or not force_companion or segment < self.max_segments:
+            return False
+        if getattr(self, "_repair_left", 0) <= 0:
+            return False
+        if self.session and len(self.session.decisions) > before_decisions:
+            return False
+        budget = getattr(self, "_call_budget", None)
+        if budget is None or not budget.grant_repair():
+            return False
+        self._repair_left = 0
+        self._repair_pending = True
+        return True
+
+    def _load_history(self) -> None:
+        path = getattr(self, "history_file", None)
+        if not path or self.history:
+            return
+        path = Path(path)
+        try:
+            if not path.is_file():
+                return
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeError):
+            return
+        if not isinstance(data, dict):
+            return
+        history = data.get("history")
+        if isinstance(history, list):
+            self.history = [item for item in history if isinstance(item, dict)]
+        starts = data.get("turn_starts")
+        if isinstance(starts, list):
+            self.turn_starts = [item for item in starts if isinstance(item, int) and item >= 0]
+        self._screen_sent = bool(data.get("screen_sent"))
+
+    def _save_history(self) -> None:
+        path = getattr(self, "history_file", None)
+        if not path:
+            return
+        path = Path(path)
+        payload = {
+            "history": self.history,
+            "turn_starts": list(self.turn_starts),
+            "screen_sent": bool(getattr(self, "_screen_sent", False)),
+        }
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_suffix(path.suffix + ".tmp")
+            temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            temporary.replace(path)
+        except (OSError, TypeError, ValueError):
+            return
+
     def _messages(self) -> list[dict]:
-        starts = self.turn_starts or [index for index, message in enumerate(self.history)
-                                     if message["role"] == "user"
-                                     and all(block.get("type") != "tool_result" for block in message["content"])]
-        start = starts[-2] if len(starts) >= 2 else (starts[-1] if starts else 0)
-        active_start = self.turn_starts[-1] if self.turn_starts else len(self.history)
-        start = max(start, min(active_start, len(self.history) - 16))
+        if self.turn_starts:
+            floor = min(self.turn_starts[-1], len(self.history))
+        else:
+            floor = max(0, len(self.history) - 1)
+        start = 0
+        while start < floor and estimate_messages_tokens(self.history[start:]) > CONTEXT_TOKEN_BUDGET:
+            start += 1
         messages = self.history[start:]
-        while messages and messages[0]["role"] == "user" and any(
-                block.get("type") == "tool_result" for block in messages[0]["content"]):
+        while messages and messages[0]["role"] == "user" and isinstance(messages[0].get("content"), list) and any(
+                isinstance(block, dict) and block.get("type") == "tool_result" for block in messages[0]["content"]):
             messages.pop(0)
         # 无图轮（turn_without_visual）：连「最近一张图」一并占位，图像
         # token 真正归零；工具结果里 history/inspect 拉回的旧图也走同一
@@ -1244,6 +1493,10 @@ class VisualDirectBackend:
     def run(self, task_input) -> DirectReply:
         if self.runtime is None:
             return DirectReply("", returncode=1, boundary=None)
+        self._load_history()
+        self._call_budget = TurnCallBudget(max(self.max_segments, 0) + 1)
+        self._repair_left = 1
+        self._repair_pending = False
         agenda = getattr(self.session or self.runtime.session, "agenda", None)
         self.runtime.begin_turn(task_input)
         self._append_input(task_input)
@@ -1256,11 +1509,22 @@ class VisualDirectBackend:
         try:
             readonly_streak = 0
             continuation_mode = "【续办】" in _extract_text(task_input)
-            for segment in range(self.max_segments + 1):
+            completed_segment = 0
+            for segment in range(self.max_segments + 2):
+                if segment > self.max_segments and not self._repair_pending:
+                    break
+                self._repair_pending = False
+                completed_segment = segment
+                force_companion = False
+                force_opportunity_probe = False
                 screen_changed = self._refresh_screen()
+                if segment == 0:
+                    self._store_opening_screenshot()
                 messages = self._messages()
                 if segment > 0 and not screen_changed:
                     messages = strip_images(messages)
+                if segment == 0:
+                    messages = self._restore_opening_image(messages)
                 notes = self._notes()
                 delivered_evidence = set(getattr(self.session or self.runtime.session, "reviewable_evidence", set()))
                 if notes:
@@ -1329,7 +1593,7 @@ class VisualDirectBackend:
                             "填写 next_step（ready=下一个具体后续动作，waiting=明确缺什么，done=已完成）。"
                             "不要再调用搜索、读笔记、history，也不要只输出文字。"}]})
                 started = time.perf_counter()
-                payload, req = post_model(self.cfg, body)
+                payload, req = post_model(self.cfg, body, budget=self._call_budget)
                 blocks = payload.get("content") or []
                 self.history.append({"role": "assistant", "content": blocks})
                 text = "".join(block.get("text", "") for block in blocks
@@ -1359,10 +1623,18 @@ class VisualDirectBackend:
                     self.history.append({"role": "user", "content": [{"type": "text", "text":
                         "本轮没有收到工具调用。不要继续写分析；立即调用 companion：直接回答待回应消息，"
                         "或用 quiet 收尾并填写 next_step。不要再调用 read_guide/read_working，当前笔记已附上。"}]})
+                    if self._schedule_terminal_repair(segment, force_companion, before_decisions, boundary):
+                        continue
+                    if force_companion and segment >= self.max_segments:
+                        break
                     continue
                 results = []
                 for call in calls:
                     call_id = call.get("id") or f"direct-{len(self.history)}"
+                    if call.get("argument_error"):
+                        results.append({"type": "tool_result", "tool_use_id": call_id, "is_error": True,
+                                        "content": [{"type": "text", "text": str(call["argument_error"])}]})
+                        continue
                     spec = self.runtime.spec(call.get("name"))
                     latest = self.live_screen.latest() if self.live_screen is not None else None
                     conversation_call = (call.get("name") == "companion"
@@ -1436,6 +1708,14 @@ class VisualDirectBackend:
                 readonly_streak = readonly_streak + 1 if (read_only_batch or failed_batch) and not new_evidence else 0
                 if boundary:
                     break
+                decided = bool(self.session and len(self.session.decisions) > before_decisions)
+                if force_companion and segment >= self.max_segments and not decided:
+                    if self._schedule_terminal_repair(segment, force_companion, before_decisions, boundary):
+                        self.history.append({"role": "user", "content": [{"type": "text", "text":
+                            "上一次工具调用没有形成 companion 决定。现在只调用 companion，"
+                            "参数必须符合 schema；不要只输出文字，也不要再调用别的工具。"}]})
+                        continue
+                    break
         except ModelRateLimited:
             self.rate_limited_until = time.time() + RATE_LIMIT_COOLDOWN_S
             print("[brain] model rate-limited; giving up on this turn", flush=True)
@@ -1445,11 +1725,13 @@ class VisualDirectBackend:
             detail = str(reason).replace(str(self.cfg.get("api_key") or "<unset>"), "[redacted]")[:240]
             print(f"[brain] direct model call failed: {type(exc).__name__}/{type(reason).__name__}: {detail}", flush=True)
             return DirectReply(text, returncode=1, boundary=boundary)
+        finally:
+            self._save_history()
         if self.session and len(self.session.decisions) > before_decisions:
             decision = self.session.decisions[-1]
             self.runtime.artifacts.record("turn_outcome", {
                 "kind": decision.get("kind"), "next_step": decision.get("next_step"),
-                "actions": self.session.actions, "segments": segment + 1})
+                "actions": self.session.actions, "segments": completed_segment + 1})
         return DirectReply(text, returncode=0 if boundary else 1, boundary=boundary)
 
 
@@ -1729,6 +2011,8 @@ def run() -> None:
     cfg = {"model": _p.model, "base_url": _p.base_url, "api_key": _p.api_key, "protocol": _p.protocol}
     root = COMPANION / "runs" / time.strftime("%Y%m%d-%H%M%S")
     session, runtime, backend, mode = build(cfg, root)
+    if isinstance(backend, VisualDirectBackend):
+        backend.history_file = COMPANION / "direct_history.json"
     if hasattr(backend, "attach"):
         backend.attach(session)
     live_screen = LiveScreen() if isinstance(backend, VisualDirectBackend) else None

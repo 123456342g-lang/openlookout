@@ -98,6 +98,42 @@ class TaskInput:
         ]
 
 
+def _schema_hint(schema: Any, validator: str | None) -> str:
+    if not isinstance(schema, dict):
+        return str(validator or "object")
+    parts = []
+    if "type" in schema:
+        parts.append(f"type {schema['type']}")
+    if "enum" in schema:
+        parts.append(f"enum {list(schema['enum'])}")
+    if "const" in schema:
+        parts.append(f"const {schema['const']}")
+    if not parts and validator:
+        parts.append(str(validator))
+    return " ".join(parts)[:180] or "object"
+
+
+def _invalid_tool_arguments(arguments: Any, validator) -> str:
+    """Name the field, the validator message, and the schema type or enum."""
+    if not isinstance(arguments, dict):
+        return "Invalid tool arguments. arguments must be an object."
+    if validator is None:
+        return "Invalid tool arguments. (root): arguments do not match the tool schema (schema object)."
+    details = []
+    try:
+        for err in validator.iter_errors(arguments):
+            path = ".".join(str(part) for part in err.absolute_path) or "(root)"
+            hint = _schema_hint(err.schema, err.validator)
+            details.append(f"{path}: {err.message} (schema {hint})")
+            if len(details) >= 5:
+                break
+    except Exception:
+        return "Invalid tool arguments. (root): arguments could not be checked (schema object)."
+    if not details:
+        return "Invalid tool arguments. (root): arguments do not match the tool schema (schema object)."
+    return "Invalid tool arguments. " + "; ".join(details)
+
+
 class TaskRuntime:
     def __init__(
         self,
@@ -387,7 +423,11 @@ class TaskRuntime:
                 if binding.spec.dispatch_invalid:
                     arguments = None
             if not valid and not binding.spec.dispatch_invalid:
-                return self._rejected(call_id, tool, "Invalid tool arguments.")
+                return self._rejected(
+                    call_id,
+                    tool,
+                    _invalid_tool_arguments(arguments, self._validators.get(tool)),
+                )
             if not self._charge(dict(binding.spec.costs)):
                 return self._stopped_execution("The task budget is exhausted.")
             self.artifacts.record(

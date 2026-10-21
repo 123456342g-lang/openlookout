@@ -73,7 +73,9 @@ Claude Code 是可选项：`OPENLOOKOUT_BACKEND=claude`（`host` 是同一条路
 
 ## 费用
 
-屏幕没有明显变化，也没有反馈、维护信号、续办、目标或待回复时，不会调用模型。心跳和「历史文件在」本身不是触发。发出去的图如果长边超过 768 像素，会先缩小成 JPEG。同一轮后面的请求，如果屏幕没变，就不再附上整张截图；工具返回的小图裁块会留下。每一轮默认最多 4 次 HTTP（`OPENLOOKOUT_MAX_CALLS`，限制在 1 到 8）。
+屏幕没有明显变化，也没有反馈、维护信号、续办、目标或待回复时，不会调用模型。心跳和「历史文件在」本身不是触发。发出去的图如果长边超过 768 像素，会先缩小成 JPEG。同一次会话里第一次发给模型的请求会带上当前截图。同一轮后面的请求，如果屏幕没变，就不再附上整张截图；工具返回的小图裁块会留下。上下文按估算 token 丢掉更早的消息，不按条数硬切，当前这一轮不会被裁掉。直连会话写在本机 `companion/direct_history.json`，大脑重启后接着用。
+
+单次 HTTP 超时是 180 秒。遇到 429、500、502、503、超时，或返回的不是 JSON，会按 2 秒、再 8 秒退避，最多再试 2 次。这些重试计入每轮 HTTP 上限。每一轮默认最多 4 次 HTTP（`OPENLOOKOUT_MAX_CALLS`，限制在 1 到 8）。429 的重试用完后，本轮停止，并冷却 600 秒。被迫收尾的 companion 如果没有形成决定，会再补一次调用；次数已经用完就不再补。
 
 ## 配置
 
@@ -82,7 +84,7 @@ Claude Code 是可选项：`OPENLOOKOUT_BACKEND=claude`（`host` 是同一条路
 | `OPENLOOKOUT_BACKEND` | 空或 `direct`：直连。`claude` / `host`：本机 Claude Code。`mimo` 不再是别名，和其它不认识的值一样走直连。 |
 | `OPENLOOKOUT_MODEL` | 覆盖 `provider.json` 的 `model`。空则用文件里的名字。 |
 | `OPENLOOKOUT_LANG` | `zh` 或 `en`。空则跟 Windows 显示语言：`zh*` 中文，其余英文。 |
-| `OPENLOOKOUT_MAX_CALLS` | 每轮 HTTP 上限，默认 4，夹在 1 到 8。 |
+| `OPENLOOKOUT_MAX_CALLS` | 每轮 HTTP 上限，默认 4，夹在 1 到 8。429 和 500/502/503、超时、坏 JSON 的重试都算进去。 |
 | `SPRITE_API_KEY` | 必填、非空。Ollama 可用占位符 `ollama`。 |
 | `provider.json` | `protocol`、`base_url`、`model`。其它键忽略。 |
 
