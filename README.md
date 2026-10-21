@@ -30,6 +30,10 @@ python -m sprite.proactive.live
 
 小精灵出现在桌面右下角。点它就能聊天。屏幕上的事卡住了，它会自己开口；你点「好的」它才动手，气泡上可以撤销。
 
+界面跟 Windows 的显示语言走：`zh*` 说中文，其他语言说英文。要固定一种，在 `.env` 里写 `OPENLOOKOUT_LANG=zh` 或 `OPENLOOKOUT_LANG=en`。
+
+The window follows the Windows display language: Chinese for `zh*`, English otherwise. Set `OPENLOOKOUT_LANG=zh` or `OPENLOOKOUT_LANG=en` to pin it.
+
 ## 后端（都可选，没有硬锁定）
 
 | 方式 | 什么时候用 |

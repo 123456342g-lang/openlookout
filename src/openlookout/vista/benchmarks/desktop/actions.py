@@ -16,6 +16,7 @@ from typing import Any
 
 import psutil
 
+from sprite.i18n import t
 from vista.core.contracts import Capability, Effect, EvidenceKind, Observation, ObservationBundle, ToolReply, ToolSpec, Visual
 from . import historyfacts
 
@@ -964,7 +965,7 @@ def end_process(args: dict[str, Any]) -> ToolReply:
 
 
 def undo(args: dict[str, Any]) -> ToolReply:
-    if not JOURNAL.exists(): return ToolReply("没有可还原的操作。")
+    if not JOURNAL.exists(): return ToolReply(t("undo_empty"))
     rows = [json.loads(l) for l in JOURNAL.read_text(encoding="utf-8").splitlines() if l.strip()]
     done = []
     failed = []
@@ -1020,9 +1021,9 @@ def undo(args: dict[str, Any]) -> ToolReply:
                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         done.append(r["desc"])
     JOURNAL.rename(JOURNAL.with_suffix(f".{int(time.time())}.done"))
-    text = "已还原：" + "；".join(done) if done else "没有成功还原的操作。"
+    text = t("undo_done", items=t("list_sep").join(done)) if done else t("undo_none")
     if failed:
-        text += f"；{len(failed)} 个文件因冲突、内容变化或无法处理而保留原处。"
+        text += t("undo_failed_suffix", n=len(failed))
     return ToolReply(text, success=bool(done) or not failed)
 
 
@@ -1128,8 +1129,8 @@ def restore_quarantine() -> str:
     for e in q.held():
         try: q.restore(e["id"]); done.append(e["orig"])
         except Exception: failed.append(e["orig"])
-    if not done: return "隔离区里没有待还原的东西。"
-    msg = f"已还原 {len(done)} 个文件到原位置" + (f"（{len(failed)} 个失败）" if failed else "。")
+    if not done: return t("quarantine_empty")
+    msg = t("quarantine_restored", n=len(done)) + (t("quarantine_failed", n=len(failed)) if failed else t("quarantine_period"))
     return msg
 
 
@@ -1178,7 +1179,7 @@ def reclaim(args: dict[str, Any], env=None, disk=None, recycle=None) -> ToolRepl
             if not room(): break
             plan.append(("recycle", rpath, ipath, is_dir))
     if not plan:
-        return ToolReply("没有找到可以安全清理的东西（临时文件、缓存和回收站里都没有可收的项）。电脑没有被改动。")
+        return ToolReply(t("reclaim_none"))
     recycle_planned = sum(1 for e in plan if e[0] == "recycle")
     _journal(dict(desc=f"清理 {len(plan) - recycle_planned} 个可再生文件、{recycle_planned} 项回收站内容（隔离区，可还原）",
                   undo_cmd=_undo_cmd_quarantine(), cwd=str(ROOT)))
@@ -1214,12 +1215,19 @@ def reclaim(args: dict[str, Any], env=None, disk=None, recycle=None) -> ToolRepl
             skipped.append(str(entry[1].name))            # 放不进隔离区就原样不动
     free_after = disk()
     freed = round(max(0.0, free_after - free_before), 2)
-    text = (f"已收进隔离区：{cache_done} 个临时/缓存文件、{recycle_done} 项回收站内容"
-            f"（约 {bytes_done / 2 ** 20:.0f}MB；C 盘 {free_before}GB → "
-            f"{free_after}GB，实际腾出 {freed}GB）。都不是永久删除，点撤销就能原样还原。")
-    if skipped: text += f"另有 {len(skipped)} 个状态变了或放不进隔离区，没有动。"
+    text = t(
+        "reclaim_summary",
+        cache=t("reclaim_cache_count", n=cache_done),
+        recycle=t("reclaim_recycle_count", n=recycle_done),
+        mb=f"{bytes_done / 2 ** 20:.0f}",
+        before=free_before,
+        after=free_after,
+        freed=freed,
+        reversible=t("reclaim_reversible"),
+    )
+    if skipped: text += t("reclaim_skipped", n=len(skipped))
     if exhaustive and free_after <= 1.0:
-        text += "安全的来源已经查完，空间还是紧；不确定的用户文件我没有动。"
+        text += t("reclaim_tight")
     return ToolReply(text)
 
 

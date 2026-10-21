@@ -13,6 +13,8 @@ from pathlib import Path
 
 import certifi
 
+from sprite.i18n import LiveText
+
 from . import coach, desktopfacts, memory, systemfacts, watching
 from .decision_engine import DecisionEngine
 from .agenda import Agenda
@@ -774,7 +776,7 @@ class ModelRateLimited(RuntimeError):
 # Two sleeps, three HTTP tries, then give up. Not an open-ended 60-retry.
 RATE_LIMIT_BACKOFF_S = (2.0, 8.0)
 RATE_LIMIT_COOLDOWN_S = 600.0
-RATE_LIMIT_SAY = "我这会儿连不上，先安静陪着，过几分钟再看你这边。"
+RATE_LIMIT_SAY = LiveText("rate_limit")
 
 
 def model_response(request, *, sleep=time.sleep):
@@ -818,11 +820,12 @@ def arm_rate_limit(backend, now: float | None = None) -> None:
         return
     backend.rate_limit_said = True
     PERCEIVE.mkdir(parents=True, exist_ok=True)
+    say = str(RATE_LIMIT_SAY)
     row = {
         "t": now,
         "kind": "companion",
-        "say": RATE_LIMIT_SAY,
-        "speech": {"kind": "companion", "say": RATE_LIMIT_SAY},
+        "say": say,
+        "speech": {"kind": "companion", "say": say},
         "activity": "",
         "state": "",
         "source": "vista",
@@ -835,7 +838,7 @@ def arm_rate_limit(backend, now: float | None = None) -> None:
         return
     try:
         from sprite.proactive.help import publish
-        publish({"id": f"rate-{time.time_ns()}", "t": now, "text": RATE_LIMIT_SAY,
+        publish({"id": f"rate-{time.time_ns()}", "t": now, "text": say,
                  "topic": "陪伴", "kind": "companion"})
     except Exception:
         return

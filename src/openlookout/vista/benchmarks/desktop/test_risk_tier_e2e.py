@@ -24,6 +24,7 @@ import pytest
 _TMP = Path(tempfile.mkdtemp(prefix="risk-e2e-"))
 os.environ["SPRITE_HOME"] = str(_TMP)
 
+from sprite.i18n import t                                         # noqa: E402
 from vista.benchmarks.desktop import actions, permissions          # noqa: E402
 from vista.benchmarks.desktop import session as sessionmod          # noqa: E402
 from vista.benchmarks.desktop.permissions import Gate, Mode, Policy  # noqa: E402
@@ -251,7 +252,7 @@ def test_risk_proposal_is_published_through_the_offer_channel(sandbox, monkeypat
     assert written, "风险批次必须经 help.publish 发布"
     offer = written[-1]
     assert offer["kind"] == "offer"
-    assert offer["options"] == helpmod.OFFER_OPTIONS == ["好的", "不用"]
+    assert offer["options"] == list(helpmod.OFFER_OPTIONS)
     assert offer["risk"] == "medium"
     assert offer["items"][0]["arguments"]["name"] == "x.md"
 
@@ -268,8 +269,8 @@ def test_batch_report_is_honest_about_partial_failure():
     from sprite.proactive.live import _batch_report
     assert "3" in _batch_report([{"success": True}] * 3)
     mixed = [{"success": True}, {"success": False}]
-    assert "2 件事里做成了 1 件" in _batch_report(mixed)
-    assert "没有做成" in _batch_report([{"success": False}])
+    assert _batch_report(mixed) == t("batch_partial", total=2, ok=1)
+    assert _batch_report([{"success": False}]) == t("batch_none")
 
 
 def _ok(text):

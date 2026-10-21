@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .perceive import DIR, NOW
 from .feedback import add_feedback
+from ..i18n import LiveText, t
 from .help import OFFER_OPTIONS
 from . import conversation
 from .public_speech import dialog_status, leaks_internal, offer_is_safe_reclaim, user_label
@@ -118,13 +119,13 @@ def run_offer(offer: dict, show) -> None:
                               cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=900)
         result = _last_json(proc.stdout) or {}
     except subprocess.TimeoutExpired:
-        record_offer_result(offer, "auto_failed", report="这件事处理超时，我没有留下半截改动。",
+        record_offer_result(offer, "auto_failed", report=t("timeout_report"),
                             run_dir=str(run_dir))
-        show(dict(kind="say", text="这件事花的时间有点长，我先停下了，没有留下半截改动。")); return
+        show(dict(kind="say", text=t("timeout_say"))); return
     except Exception as exc:
         record_offer_result(offer, "auto_failed", error=type(exc).__name__,
-                            report="这次处理没有启动成功，电脑没有被改动。", run_dir=str(run_dir))
-        show(dict(kind="say", text="这次处理没有启动成功，电脑没有被改动。")); return
+                            report=t("start_fail"), run_dir=str(run_dir))
+        show(dict(kind="say", text=t("start_fail"))); return
     action = _successful_action(result)
     # Persistent VISTA turns end at companion, so ``final`` is often empty.
     # A post-action report (or successful mutating tool) is the completion
@@ -137,8 +138,8 @@ def run_offer(offer: dict, show) -> None:
     common = dict(run_dir=str(run_dir), mutations=mutations)
     if proc.returncode:
         record_offer_result(offer, "auto_errored", error=f"returncode:{proc.returncode}", **common,
-                            report="这次处理出错了，我没有留下半截改动。")
-        show(dict(kind="say", text="这次处理出错了，我没有留下半截改动。")); return
+                            report=t("errored"))
+        show(dict(kind="say", text=t("errored"))); return
     if not answered:
         error = "no_final_answer"
         if result.get("failure"):
@@ -146,13 +147,13 @@ def run_offer(offer: dict, show) -> None:
         if report:
             note = report[:300]
         elif mutations:
-            note = f"这次处理没走到最后一步，我先停下了；已经做了 {mutations} 处可撤回的改动。"
+            note = t("no_answer_mutations", n=mutations)
         else:
-            note = "这次处理没走到最后一步，我先停下了，没有改动电脑。"
+            note = t("no_answer_clean")
         record_offer_result(offer, "auto_no_answer", error=error, report=note, **common)
         show(dict(kind="say", text=note)); return
     if not final:
-        final = report or "已经处理完成。"
+        final = report or t("done_default")
     record_offer_result(offer, "auto_completed", report=final[:300], **common)
     show(dict(kind="action", text=final[:300], action_id=offer.get("id") or "help"))
 
@@ -169,12 +170,12 @@ def run_safe_reclaim(offer: dict, show) -> None:
         reply = reclaim({})
     except Exception as exc:
         record_offer_result(offer, "auto_errored", error=type(exc).__name__,
-                            report="这次没收起来，电脑没有被改动。")
-        show(dict(kind="say", text="这次没收起来，电脑没有被改动。"))
+                            report=t("reclaim_fail"))
+        show(dict(kind="say", text=t("reclaim_fail")))
         return
-    text = str(getattr(reply, "text", "") or "").strip() or "临时文件和缓存已经收进隔离区，随时可以还原。"
+    text = str(getattr(reply, "text", "") or "").strip() or t("reclaim_empty")
     if leaks_internal(text):
-        text = "临时文件、缓存和回收站里能还原的已经收好了，不满意可以还原。"
+        text = t("reclaim_fallback")
     ok = bool(getattr(reply, "success", True))
     record_offer_result(offer, "auto_completed" if ok else "auto_no_answer", report=text[:300])
     kind = "action" if ok else "say"
@@ -206,18 +207,18 @@ def _batch_report(results: list[dict]) -> str:
     ok = sum(1 for r in results if r.get("success"))
     total = len(results)
     if ok == total:
-        return f"按你的同意做了 {total} 件事，随时可以撤回。"
+        return t("batch_all", total=total)
     if ok:
         # 部分失败必须说清「做了几件、没做几件」，不能笼统说完成。
-        return f"{total} 件事里做成了 {ok} 件，其余没做成；我没有多做别的。"
-    return "这一批没有做成，电脑状态没有被改动。"
+        return t("batch_partial", total=total, ok=ok)
+    return t("batch_none")
 
 
 def undo_offer() -> str:
     """撤回 Claude Code 在这次帮忙里记录的所有操作。"""
     code = "from vista.benchmarks.desktop.actions import undo; print(undo({}).text)"
     proc = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
-    return (proc.stdout.strip() or "撤回没有成功，我没有改动任何其他东西。")[:300]
+    return (proc.stdout.strip() or t("undo_fail"))[:300]
 
 
 PKG = Path(__file__).resolve().parent                      # sprite/proactive
@@ -249,7 +250,7 @@ OFFER_ASK_S = 60
 BUBBLE_READ_S, BUBBLE_PER_CHAR_S, BUBBLE_MAX_S = 30.0, 0.1, 90.0
 # 待机提示文案。这是句引导语，不是精灵对用户说的话——所以 present() 里
 # 显式不把它写进对话记录（否则 transcript 里会出现一条它从未说过的发言）。
-IDLE_HINT_TEXT = "我在。屏幕上卡住了就点我。"
+IDLE_HINT_TEXT = LiveText("idle_hint")
 # 「正在处理」状态最多保持多久（毫秒）。这是一道**状态**上限，不是气泡时长：
 # run_offer 允许跑到 900s，在这段时间里 tick 不能把精灵的进度汇报当成新提议
 # 重新处理一遍。气泡早已自己消失，但「还在忙」这个事实要留着。
@@ -801,7 +802,7 @@ def run_gui() -> None:
         offer_state["running"] = offer.get("id")
         record_offer_result(offer, "started")
         label = user_label(offer.get("topic"))
-        present_say(dict(kind="say", text=f"好，我开始处理{label}，完成后告诉你。"),
+        present_say(dict(kind="say", text=t("starting", label=label)),
                     event_id=f"{offer.get('id')}:started")
 
         def report(msg: dict) -> None:
@@ -871,7 +872,7 @@ def run_gui() -> None:
             try:
                 text = undo_offer()
             except Exception:
-                text = "撤回没有启动成功，请稍后再试。"
+                text = t("undo_fail_start")
             if offer:
                 record_offer_result(offer, "undone")
             root.after(0, lambda: present_say(dict(kind="say", text=text)))
@@ -884,7 +885,7 @@ def run_gui() -> None:
     # 「同一句话一直显示」；而且它是被过滤掉不写进对话记录的，等于屏幕上
     # 挂着一句幽灵话。点精灵随时能开对话框，这个提示只需要露个面。
     IDLE_HINT_S = 6.0
-    w.show(dict(kind="say", text=IDLE_HINT_TEXT), IDLE_HINT_S)
+    w.show(dict(kind="say", text=str(IDLE_HINT_TEXT)), IDLE_HINT_S)
     shown = {"t": None}
 
     def tick() -> None:

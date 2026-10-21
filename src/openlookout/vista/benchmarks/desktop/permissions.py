@@ -31,6 +31,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Callable
 
+from sprite.i18n import t
 from vista.core.contracts import Effect
 
 HOME = Path(os.environ.get("SPRITE_HOME", r"E:\OpenLookout\sprite_home"))
@@ -107,16 +108,16 @@ TOOL_TIER: dict[str, RiskTier] = {
 # 批准时是在 GUI 进程里逐条重放的，那时没有 current_visual。
 _NEEDS_LIVE_VISUAL = frozenset({"desktop_capture_evidence"})
 
-_LABELS: dict[str, str] = {
-    "desktop_write_deliverable": "写文档",
-    "desktop_reclaim": "清理临时文件和缓存",
-    "desktop_tidy": "整理桌面文件",
-    "desktop_suspend": "挂起进程",
-    "desktop_end_process": "结束进程",
-    "desktop_trim": "回收闲置内存",
-    "desktop_undo": "撤回操作",
-    "basic_shell": "执行命令行",
-    "desktop_capture_evidence": "保存证据截图",
+_LABEL_KEYS: dict[str, str] = {
+    "desktop_write_deliverable": "label_write",
+    "desktop_reclaim": "label_reclaim",
+    "desktop_tidy": "label_tidy",
+    "desktop_suspend": "label_suspend",
+    "desktop_end_process": "label_end",
+    "desktop_trim": "label_trim",
+    "desktop_undo": "label_undo",
+    "basic_shell": "label_shell",
+    "desktop_capture_evidence": "label_capture",
 }
 
 
@@ -185,20 +186,21 @@ def tier_of(tool: str, spec: Any = None) -> RiskTier:
 def describe(tool: str, arguments: dict[str, Any] | None) -> str:
     """提议里给用户看的那一行。必须说清**具体要动什么**，不能只说「要写文件」。"""
     args = arguments or {}
-    label = _LABELS.get(tool, tool)
+    key = _LABEL_KEYS.get(tool)
+    label = t(key) if key else tool
     if tool == "desktop_write_deliverable":
-        return f"{label}：{args.get('name')}"
+        return t("with_value", label=label, value=args.get("name"))
     if tool in {"desktop_suspend", "desktop_end_process"}:
-        return f"{label}：PID {args.get('pid')}"
+        return t("with_pid", label=label, pid=args.get("pid"))
     if tool == "basic_shell":
         command = " ".join(str(args.get("command") or "").split())
-        return f"{label}：{command[:120]}"
+        return t("with_value", label=label, value=command[:120])
     if tool == "desktop_tidy":
-        return f"{label}：最多 {args.get('max_items', 200)} 个文件"
+        return t("tidy_count", label=label, n=args.get("max_items", 200))
     if tool == "desktop_capture_evidence":
-        return f"{label}：{args.get('label')}"
+        return t("with_value", label=label, value=args.get("label"))
     if tool == "desktop_undo":
-        return f"{label}：撤回本轮已记录的操作"
+        return t("undo_recorded", label=label)
     return label
 
 
@@ -319,10 +321,9 @@ def _proposal_text(items: list[Item], tier: RiskTier) -> str:
     """
     lines = [f"{i.text}" for i in items]
     if len(lines) == 1:
-        return f"我想帮你做这件事：\n{lines[0]}\n要我开始吗？"
-    return (f"我想帮你做这 {len(lines)} 件事：\n"
-            + "\n".join(f"{n}. {line}" for n, line in enumerate(lines, 1))
-            + "\n要一起做吗？")
+        return t("proposal_one", line=lines[0], ask=t("proposal_start"))
+    numbered = "\n".join(f"{n}. {line}" for n, line in enumerate(lines, 1))
+    return t("proposal_many", n=len(lines), lines=numbered, ask=t("proposal_together"))
 
 
 # ── 落盘：GUI 是另一个进程，批准与执行都在那边 ───────────────────────────────

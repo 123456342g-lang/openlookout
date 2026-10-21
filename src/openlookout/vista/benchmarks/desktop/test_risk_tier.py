@@ -20,6 +20,7 @@ import time
 
 import pytest
 
+from sprite.i18n import t
 from vista.benchmarks.desktop import actions, permissions
 from vista.benchmarks.desktop import session as sessionmod
 from vista.benchmarks.desktop.permissions import Gate, Mode, Policy, RiskTier
@@ -140,13 +141,14 @@ def test_proposal_text_is_plain_chinese_without_internal_terms():
     for text in (one, many):
         for word in _INTERNAL_WORDS:
             assert word not in text, f"内部术语 {word!r} 不得出现在提议文案：{text}"
-    assert "整理桌面文件" in one and "要我开始吗" in one
-    assert "2 件" in many and "a.md" in many and "要一起做吗" in many
+    assert "整理桌面文件" in one and t("proposal_start") in one
+    assert "2" in many and "a.md" in many and t("proposal_together") in many
 
 
 def test_user_facing_labels_sound_human_not_internal():
-    assert permissions.describe("desktop_reclaim", {}) == "清理临时文件和缓存"
-    assert permissions.describe("desktop_write_deliverable", {"name": "报告.md"}) == "写文档：报告.md"
+    assert permissions.describe("desktop_reclaim", {}) == t("label_reclaim")
+    assert permissions.describe("desktop_write_deliverable", {"name": "报告.md"}) == t(
+        "with_value", label=t("label_write"), value="报告.md")
 
 
 def test_batch_window_flushes_once_then_clears():

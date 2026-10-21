@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from sprite.i18n import t
 from vista.benchmarks.desktop import actions
 from vista.benchmarks.desktop.actions import reclaim, restore_quarantine
 from sprite.risk import Env
@@ -52,7 +53,7 @@ def _mk(p: Path, data: bytes = b"x" * 1024) -> Path:
 def test_reclaims_regenerable_cache(world):
     _mk(world["cache"] / "f_0001", b"c" * 2048)
     out = reclaim({}, env=world["env"], disk=lambda: 100.0)
-    assert "1 个临时/缓存文件" in out.text and "0 项回收站内容" in out.text
+    assert t("reclaim_cache_count", n=1) in out.text and t("reclaim_recycle_count", n=0) in out.text
     assert not (world["cache"] / "f_0001").exists()                       # 原文件已收走
     assert Quarantine(world["home"]).held()                               # 隔离区里确实收着
 
@@ -62,25 +63,25 @@ def test_never_touches_user_documents_or_unknowns(world):
     _mk(world["dl"] / "奇怪的东西.bin", b"u" * 4096)
     out = reclaim({}, env=world["env"], disk=lambda: 100.0)
     assert doc.exists() and doc.read_bytes() == b"d" * 4096                # 用户文档一个字节没动
-    assert "没有找到可以安全清理" in out.text
+    assert out.text == t("reclaim_none")
 
 
 def test_nothing_safe_reports_hands_off(world):
     out = reclaim({}, env=world["env"], disk=lambda: 100.0)
-    assert "没有找到可以安全清理" in out.text and "没有被改动" in out.text
+    assert out.text == t("reclaim_none")
 
 
 def test_noncritical_disk_respects_explicit_small_batch(world):
     for i in range(5): _mk(world["cache"] / f"f_{i:04d}", b"c" * 512)
     out = reclaim({"max_items": 2}, env=world["env"], disk=lambda: 100.0)
-    assert "2 个临时/缓存文件" in out.text
+    assert t("reclaim_cache_count", n=2) in out.text
     assert len(Quarantine(world["home"]).held()) == 2
 
 
 def test_critical_disk_exhausts_safe_candidates_without_model_batch_limit(world):
     for i in range(5): _mk(world["cache"] / f"critical_{i:04d}", b"c" * 512)
     out = reclaim({"max_items": 1}, env=world["env"], disk=lambda: 0.5)
-    assert "5 个临时/缓存文件" in out.text
+    assert t("reclaim_cache_count", n=5) in out.text
     assert len(Quarantine(world["home"]).held()) == 5
 
 
@@ -89,7 +90,7 @@ def test_undo_restores_everything(world):
     _mk(world["cache"] / "f_0001", data)
     reclaim({}, env=world["env"], disk=lambda: 100.0)
     msg = restore_quarantine()
-    assert "已还原 1 个" in msg
+    assert t("quarantine_restored", n=1) in msg
     back = world["cache"] / "f_0001"
     assert back.exists() and back.read_bytes() == data                    # 原样回来，逐字节一致
 
@@ -107,7 +108,7 @@ def test_undo_is_idempotent(world):
     _mk(world["cache"] / "f_0001", b"a" * 1024)
     reclaim({}, env=world["env"], disk=lambda: 100.0)
     restore_quarantine()
-    assert "没有待还原" in restore_quarantine()
+    assert restore_quarantine() == t("quarantine_empty")
 
 
 def test_journal_written_before_acting(world):
@@ -128,7 +129,7 @@ def test_reclaim_reports_freed_space(world):
         seen["n"] += 1
         return 99.0 if seen["n"] == 1 else 100.5                         # 清理后多出 1.5GB
     out = reclaim({}, env=world["env"], disk=disk)
-    assert "1.5GB" in out.text and "还原" in out.text
+    assert "1.5GB" in out.text and t("reclaim_reversible") in out.text
 
 
 # ── 回收站：$I/$R 成对收进隔离区，可还原回回收站原位置（issue #25）─────────
@@ -161,7 +162,7 @@ def test_recycle_bin_items_are_quarantined_and_restored(world, tmp_path):
     data = rfile.read_bytes()
     out = reclaim({"max_items": 50}, env=world["env"], disk=lambda: 100.0,
                   recycle=lambda: actions._recycle_targets(roots=[bin_dir]))
-    assert "2 项回收站内容" in out.text
+    assert t("reclaim_recycle_count", n=2) in out.text
     assert not rfile.exists() and not rdir.exists()                      # $R 主项都收走
     held = Quarantine(world["home"]).held()
     origs = [e["orig"] for e in held]
@@ -179,7 +180,7 @@ def test_recycle_respects_batch_limit(world, tmp_path):
         (bin_dir / f"$I{code}.tmp").write_bytes(b"\x00" * 32)
     out = reclaim({"max_items": 2}, env=world["env"], disk=lambda: 100.0,
                   recycle=lambda: actions._recycle_targets(roots=[bin_dir]))
-    assert "2 项回收站内容" in out.text
+    assert t("reclaim_recycle_count", n=2) in out.text
     r_held = [e for e in Quarantine(world["home"]).held()
               if Path(e["orig"]).name.startswith("$R")]
     assert len(r_held) == 2                                    # 只收 2 个 $R 主项
@@ -192,4 +193,4 @@ def test_recycle_target_vanished_before_action_is_skipped(world, tmp_path):
     out = reclaim({}, env=world["env"], disk=lambda: 100.0,
                   recycle=lambda: [(gone, None, False)])
     assert Quarantine(world["home"]).held() == []                        # 一个字节没动
-    assert "1 个" in out.text and "没有动" in out.text
+    assert t("reclaim_skipped", n=1) in out.text

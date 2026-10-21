@@ -11,6 +11,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from ..i18n import t
 from .perceive import DIR
 
 LOG = DIR / "conversation.jsonl"
@@ -88,14 +89,14 @@ def history(limit: int = 80) -> list[dict]:
             label = text
         elif result == "started":
             # 同意门之后：这是用户点了「好的」之后才出现的状态。
-            label = f"我开始处理：{text}"
+            label = t("started_hist", text=text)
         elif result == "expired":
             # 没等到答复就到期作废 —— 没动手，如实说没动手。
-            label = f"这条提议你没来得及回应，我先作废了，没有动手：{text}"
+            label = t("expired_hist", text=text)
         elif result == "auto_started":
-            label = f"我开始处理：{text}"
+            label = t("started_hist", text=text)
         elif result == "auto_completed":
-            label = str(r.get("report") or r.get("completion") or f"已完成：{text}")
+            label = str(r.get("report") or r.get("completion") or t("completed_hist", text=text))
         elif result == "auto_no_answer":
             # 进程正常退出、但这一段运行没有提交最终结论（旧词 auto_failed 的真实含义）。
             try:
@@ -105,17 +106,17 @@ def history(limit: int = 80) -> list[dict]:
             if r.get("report"):
                 label = str(r["report"])
             elif changes:
-                label = f"这次处理没走到最后一步，我先停下了；已经做了 {changes} 处可撤回的改动。"
+                label = t("no_answer_mutations", n=changes)
             else:
-                label = "这次处理没走到最后一步，我先停下了，没有改动电脑。"
+                label = t("no_answer_clean")
         elif result == "auto_errored":
-            label = str(r.get("report") or "这次处理出错了，我先停下了，没有留下半截改动。")
+            label = str(r.get("report") or t("errored_hist"))
         elif result == "auto_failed":
             # 历史行：旧代码把「没提交结论」记成了 auto_failed，且没记 report/mutations。
             # 不把历史行重新解释成新语义，只给一句对当时两种情形都成立的文案。
-            label = str(r.get("report") or "这次处理没有走到最后一步，我先停下了。")
+            label = str(r.get("report") or t("stopped_hist"))
         elif result == "undone":
-            label = "已撤销刚才的改动。"
+            label = t("undone_hist")
         else:
             continue
         item = {"t": r.get("t_answer", r.get("t", 0)), "role": "assistant", "text": label,

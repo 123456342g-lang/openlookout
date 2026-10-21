@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from sprite.i18n import t
 from vista.benchmarks.desktop import actions, session as sessmod
 from vista.benchmarks.desktop.session import DesktopSession
 from vista.benchmarks.desktop.profiles import make_profile, make_experiment
@@ -145,7 +146,7 @@ def test_undo_restores_everything_in_the_journal(monkeypatch):
         done = []
         monkeypatch.setattr(subprocess, "run", lambda *a, **k: done.append(a) or subprocess.CompletedProcess(a[0], 0))
         out = actions.undo({})
-        assert "已还原" in out.text
+        assert t("restored_word") in out.text
         assert "挂起 foo#1" in out.text
         assert done, "没真的执行撤回命令"
         assert not j.exists(), "撤回后journal 应该被归档，不是留在原地"
@@ -155,7 +156,7 @@ def test_undo_with_empty_journal_is_harmless(monkeypatch):
     import tempfile
     with tempfile.TemporaryDirectory() as d:
         monkeypatch.setattr(actions, "JOURNAL", Path(d) / "nothing.jsonl")
-        assert "没有可还原" in actions.undo({}).text
+        assert actions.undo({}).text == t("undo_empty")
 
 
 # ---------------------------------------------------------------- 5. 每轮操作数有上限

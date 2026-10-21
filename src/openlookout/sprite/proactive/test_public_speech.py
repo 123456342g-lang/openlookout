@@ -1,6 +1,7 @@
 """User-facing speech never carries internal bookkeeping."""
 from __future__ import annotations
 
+from sprite.i18n import t
 from sprite.proactive import live
 from sprite.proactive.public_speech import (
     QUIET_DIALOG,
@@ -42,9 +43,9 @@ def test_leak_patterns_cover_the_reported_phrases():
 
 
 def test_user_label_hides_risk_topics():
-    assert user_label("risk:high") == "这件事"
+    assert user_label("risk:high") == t("this_thing")
     assert user_label("磁盘清理") == "磁盘清理"
-    assert user_label("") == "这件事"
+    assert user_label("") == t("this_thing")
 
 
 def test_safe_reclaim_is_narrow():
