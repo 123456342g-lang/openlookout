@@ -13,6 +13,7 @@ import json
 
 import pytest
 
+from sprite.proactive import help as helpmod
 from sprite.proactive import live
 from vista.benchmarks.desktop import permissions
 
@@ -63,7 +64,7 @@ def test_undecided_batch_within_window_is_listed(books):
     out = pending(books)
     assert [o["id"] for o in out] == ["batch-1"]
     assert out[0]["kind"] == "offer"
-    assert out[0]["options"] == ["好的", "不用"]
+    assert out[0]["options"] == list(helpmod.OFFER_OPTIONS)
     assert out[0]["items"], "批次清单必须原样带上，批准的是这份清单"
 
 

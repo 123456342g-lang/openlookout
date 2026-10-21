@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from sprite.i18n import t
 from vista.benchmarks.desktop import actions, run as runmod
 from vista.benchmarks.desktop.session import DesktopSession
 
@@ -152,7 +153,7 @@ def test_undo_then_suspend_is_a_round_trip():
             r = actions.undo({})
         finally:
             actions.JOURNAL = old
-        assert "已还原" in r.text and "挂起 fake#1" in r.text
+        assert t("restored_word") in r.text and "挂起 fake#1" in r.text
         assert not j.exists(), "撤回后要归档，不能留在原地等下次重复执行"
 
 

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import pytest
 
+from sprite.i18n import t
 from sprite.proactive import live
 from sprite.proactive.dialog import ChatDialog
 
@@ -161,7 +162,7 @@ def _buttons(dlg, text):
 
 def test_pending_dialog_renders_nothing_without_pending(root):
     dlg = _dialog(root)
-    assert _buttons(dlg, "好的") == [], "没有未决提议时不该出现补点按钮"
+    assert _buttons(dlg, t("accept")) == [], "没有未决提议时不该出现补点按钮"
 
 
 def test_pending_card_yes_invokes_callback_and_removes_card(root):
@@ -169,7 +170,7 @@ def test_pending_card_yes_invokes_callback_and_removes_card(root):
     dlg = ChatDialog(root, 10, 10, "状态", lambda _t: "", [],
                      pending=[PENDING_OFFER],
                      on_decide=lambda offer, ok: calls.append((offer["id"], ok)))
-    yes = _buttons(dlg, "好的")
+    yes = _buttons(dlg, t("accept"))
     assert len(yes) == 1
     card = yes[0].master.master                 # row -> card
     yes[0].invoke()
@@ -182,7 +183,7 @@ def test_pending_card_no_records_rejection(root):
     dlg = ChatDialog(root, 10, 10, "状态", lambda _t: "", [],
                      pending=[PENDING_OFFER],
                      on_decide=lambda offer, ok: calls.append((offer["id"], ok)))
-    _buttons(dlg, "不用")[0].invoke()
+    _buttons(dlg, t("decline"))[0].invoke()
     assert calls == [("late-1", False)]
 
 
@@ -192,7 +193,7 @@ def test_pending_callback_error_keeps_card_and_does_not_raise(root):
 
     dlg = ChatDialog(root, 10, 10, "状态", lambda _t: "", [],
                      pending=[PENDING_OFFER], on_decide=boom)
-    yes = _buttons(dlg, "好的")[0]
+    yes = _buttons(dlg, t("accept"))[0]
     card = yes.master.master
     yes.invoke()                                 # 异常被吞进日志，不抛给 Tk
     assert card.winfo_exists() == 1, "失败时卡片留着，下次打开还能再点"

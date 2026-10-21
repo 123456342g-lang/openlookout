@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import re
 
-QUIET_DIALOG = "在安静陪着你。屏幕上卡住了，点我聊一句就行。"
+from ..i18n import LiveText, t
+
+QUIET_DIALOG = LiveText("quiet_dialog")
 
 _LEAK = re.compile(
     r"("
@@ -49,12 +51,12 @@ def dialog_status(current: dict | None) -> str:
     ``activity``, ``state``, and ``next_step`` are never rendered.
     """
     if not isinstance(current, dict):
-        return QUIET_DIALOG
+        return str(QUIET_DIALOG)
     speech = current.get("speech") if isinstance(current.get("speech"), dict) else {}
     kind = str(speech.get("kind") or current.get("kind") or "").strip()
     say = str(speech.get("say") or "").strip() or str(current.get("say") or "").strip()
     if kind == "quiet" or not say or leaks_internal(say):
-        return QUIET_DIALOG
+        return str(QUIET_DIALOG)
     return say
 
 
@@ -62,7 +64,7 @@ def user_label(topic: str | None) -> str:
     """Short label safe to put in '我开始处理…'."""
     label = str(topic or "").strip()
     if not label or leaks_internal(label) or label.startswith("risk:"):
-        return "这件事"
+        return t("this_thing")
     return label
 
 

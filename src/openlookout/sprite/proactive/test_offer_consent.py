@@ -29,14 +29,19 @@ import subprocess
 import pytest
 
 from sprite.gui import SpriteWindow
+from sprite.i18n import t
 from sprite.proactive import conversation, help as helpmod, live
 from vista.benchmarks.desktop import session as sessionmod
 
 # ── 1. 选项真的存在，且画成可点的按钮 ─────────────────────────────────────────
 
-def test_offer_options_are_defined_and_ordered():
+def test_offer_options_are_defined_and_ordered(monkeypatch):
     """第一个选项必须是「同意」——live.on_choice 用 index==0 判定执行。"""
-    assert helpmod.OFFER_OPTIONS == ["好的", "不用"]
+    monkeypatch.setenv("OPENLOOKOUT_LANG", "zh")
+    assert list(helpmod.OFFER_OPTIONS) == ["好的", "不用"]
+    monkeypatch.setenv("OPENLOOKOUT_LANG", "en")
+    assert list(helpmod.OFFER_OPTIONS) == ["OK", "No thanks"]
+    assert list(helpmod.OFFER_OPTIONS)[0] != list(helpmod.OFFER_OPTIONS)[1]
 
 
 def test_gui_renders_offer_options_as_choice_buttons():
@@ -120,7 +125,7 @@ def test_session_publishes_offer_with_options(tmp_path, monkeypatch):
                         "confidence": 0.9})
 
     assert published, "offer 应当被发布"
-    assert published[0]["options"] == ["好的", "不用"]
+    assert published[0]["options"] == list(helpmod.OFFER_OPTIONS)
     assert published[0]["kind"] == "offer"
 
 
@@ -175,7 +180,7 @@ def test_undo_path_is_still_wired():
 def test_undo_button_is_still_rendered_on_action_bubbles():
     w = SpriteWindow.__new__(SpriteWindow)
     w.msg = {"kind": "action", "text": "已整理，随时可以撤回。", "action_id": "offer-1"}
-    assert w._buttons()[0] == ("撤销", ("undo", "offer-1"))
+    assert w._buttons()[0] == (t("undo"), ("undo", "offer-1"))
 
 
 # ── 6. 词表自洽：accepted/rejected 能被统计到 ────────────────────────────────
@@ -201,5 +206,5 @@ def test_conversation_renders_new_consent_states(tmp_path, monkeypatch):
     (tmp_path / "offers.jsonl").write_text(
         "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
     labels = [r["text"] for r in conversation.history()]
-    assert any("开始处理" in t for t in labels), labels
-    assert any("作废" in t and "没有动手" in t for t in labels), labels
+    assert t("started_hist", text="清一下 C 盘") in labels, labels
+    assert t("expired_hist", text="整理桌面") in labels, labels

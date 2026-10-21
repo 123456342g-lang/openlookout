@@ -17,6 +17,8 @@ from __future__ import annotations
 import json
 import subprocess
 
+from sprite.i18n import t
+
 import sprite.proactive.conversation as conv
 import sprite.proactive.live as livemod
 
@@ -53,7 +55,7 @@ def test_unanswered_run_is_no_answer_not_failed(tmp_path, monkeypatch):
     assert row["error"] == "no_final_answer"
     assert "returncode:0" not in json.dumps(row, ensure_ascii=False)
     assert messages[-1]["kind"] == "say"
-    assert "没有改动电脑" in messages[-1]["text"]
+    assert messages[-1]["text"] == t("no_answer_clean")
 
 
 def test_nonzero_returncode_is_auto_errored(tmp_path, monkeypatch):
@@ -95,7 +97,7 @@ def test_run_dir_and_mutation_count_are_recorded(tmp_path, monkeypatch):
     assert "desktop_runs" in row["run_dir"]
     argv = seen["argv"]
     assert argv[argv.index("--directory") + 1] == row["run_dir"]
-    assert "1 处可撤回的改动" in messages[-1]["text"]
+    assert messages[-1]["text"] == t("no_answer_mutations", n=1)
 
 
 def test_successful_mutation_count_ignores_read_only_tools():
@@ -127,7 +129,7 @@ def test_history_renders_legacy_and_new_terminal_words(tmp_path, monkeypatch):
         "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
     labels = [r["text"] for r in conv.history()]
     assert len(labels) == 4, labels
-    assert "已经做了 3 处可撤回的改动" in labels[1]
-    assert "没有改动电脑" in labels[2]
-    assert "出错了" in labels[3]
+    assert labels[1] == t("no_answer_mutations", n=3)
+    assert labels[2] == t("no_answer_clean")
+    assert labels[3] == t("errored_hist")
     assert "没有改动" not in labels[0]  # 历史行的文案不再声称机器没被动过

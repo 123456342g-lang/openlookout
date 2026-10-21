@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Callable
 
 from ..gui import BG, BTN, BTN_TXT, EDGE, FONT, TXT
+from ..i18n import t
 
 # 卡片宽度与字号。原先 CARD_W=360 配 9号字，一屏放不下几句话，字号也偏小；
 # 放大到 480/12号 后一屏能看完整段对话，且不用眯眼。
@@ -34,7 +35,7 @@ class ChatDialog:
         card = tk.Frame(self.win, bg=BG, padx=PAD, pady=PAD); card.pack(padx=2, pady=2)
 
         head = tk.Frame(card, bg=BG); head.pack(fill="x")
-        tk.Label(head, text="小精灵", bg=BG, fg=TXT,
+        tk.Label(head, text=t("title"), bg=BG, fg=TXT,
                  font=(FONT[0], HEAD_FONT, "bold")).pack(side="left")
         close = tk.Label(head, text="×", bg=BG, fg=MUTED, font=(FONT[0], HEAD_FONT + 3), cursor="hand2")
         close.pack(side="right"); close.bind("<Button-1>", lambda _e: self.close())
@@ -63,10 +64,10 @@ class ChatDialog:
                             insertbackground=TXT, highlightthickness=1,
                             highlightbackground=EDGE, highlightcolor=EDGE)
         self.ent.pack(side="left", fill="x", expand=True, ipady=5)
-        self.btn = tk.Button(row, text="发送", bg=BTN, fg=BTN_TXT, activebackground=BTN, relief="flat", bd=0,
+        self.btn = tk.Button(row, text=t("send"), bg=BTN, fg=BTN_TXT, activebackground=BTN, relief="flat", bd=0,
                              font=(FONT[0], BODY_FONT), padx=12, pady=3, command=self.send, cursor="hand2")
         self.btn.pack(side="left", padx=(8, 0))
-        tk.Label(card, text="回车发送 · Esc 关闭", bg=BG, fg=MUTED,
+        tk.Label(card, text=t("hint"), bg=BG, fg=MUTED,
                  font=(FONT[0], BODY_FONT - 3)).pack(anchor="w", pady=(6, 0))
 
         self.ent.bind("<Return>", lambda _e: self.send()); self.win.bind("<Escape>", lambda _e: self.close())
@@ -94,7 +95,7 @@ class ChatDialog:
         """「它刚问你的事」：错过的提议在补点窗口内可在这里点头或拒绝。"""
         box = tk.Frame(parent, bg=BG)
         box.pack(fill="x", pady=(10, 0))
-        tk.Label(box, text="它刚问你的事（没看见的话可以在这里补点）", bg=BG, fg=MUTED,
+        tk.Label(box, text=t("pending_header"), bg=BG, fg=MUTED,
                  font=(FONT[0], BODY_FONT - 2), anchor="w").pack(fill="x")
         for offer in list(offers)[-3:]:
             self._add_pending_card(box, offer)
@@ -123,11 +124,11 @@ class ChatDialog:
                 return
             self._place()
 
-        tk.Button(row, text="好的", bg=BTN, fg=BTN_TXT, activebackground=BTN,
+        tk.Button(row, text=t("accept"), bg=BTN, fg=BTN_TXT, activebackground=BTN,
                   relief="flat", bd=0, font=(FONT[0], BODY_FONT - 1),
                   padx=14, pady=2, cursor="hand2",
                   command=lambda: choose(True)).pack(side="left")
-        tk.Button(row, text="不用", bg="#e7f0f1", fg=MUTED, activebackground="#d8e6e8",
+        tk.Button(row, text=t("decline"), bg="#e7f0f1", fg=MUTED, activebackground="#d8e6e8",
                   relief="flat", bd=0, font=(FONT[0], BODY_FONT - 1),
                   padx=14, pady=2, cursor="hand2",
                   command=lambda: choose(False)).pack(side="left", padx=(8, 0))
@@ -164,7 +165,7 @@ class ChatDialog:
             return
         self.history_box.configure(state="normal")
         stamp = datetime.now().strftime("%H:%M")
-        who = "我" if role == "user" else "小精灵"
+        who = t("me") if role == "user" else t("sprite")
         self.history_box.insert(tk.END, f"{stamp}  {who}\n{text.strip()}\n\n")
         self.history_box.configure(state="disabled")
         self.history_box.see(tk.END)
@@ -179,7 +180,7 @@ class ChatDialog:
             text = str(row.get("text") or "").strip()
             if text:
                 stamp = str(row.get("time") or "")[-8:-3] or datetime.now().strftime("%H:%M")
-                who = "我" if role == "user" else "小精灵"
+                who = t("me") if role == "user" else t("sprite")
                 self.history_box.insert(tk.END, f"{stamp}  {who}\n{text}\n\n")
         self.history_box.configure(state="disabled")
         self.history_box.see(tk.END)

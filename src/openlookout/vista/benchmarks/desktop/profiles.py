@@ -6,6 +6,7 @@ goal, and run one small reversible experiment when evidence is strong.
 """
 from __future__ import annotations
 
+from sprite.i18n import language_directive
 from vista.core.profiles import (
     AgentProfile,
     CompactionMode,
@@ -168,10 +169,13 @@ INITIAL = r"""
 
 
 def make_profile() -> AgentProfile:
+    # SYSTEM stays the product protocol. This line only tells the model which
+    # language the user should hear, matching the Windows display language.
+    system = language_directive() + "\n\n" + SYSTEM
     return AgentProfile(
         "desktop/vista/companion",
         TOOLS,
-        PromptBundle(SYSTEM, INITIAL, step=STEP_PROMPT),
+        PromptBundle(system, INITIAL, step=STEP_PROMPT),
         SessionPolicy(
             context=ContextMode.CONTINUOUS,
             interaction=InteractionMode.TOOLS,

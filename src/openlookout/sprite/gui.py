@@ -15,6 +15,7 @@ T3 真实 Windows 修正：
 from __future__ import annotations
 import ctypes, json, queue, random, sys
 from pathlib import Path
+from .i18n import t
 from .pixels import render, W, H
 
 SCALE = 5
@@ -201,9 +202,9 @@ class SpriteWindow:
     def _buttons(self):
         m = self.msg
         if not m: return []
-        det = [("详情", ("detail", None))] if m.get("detail") else []
+        det = [(t("detail"), ("detail", None))] if m.get("detail") else []
         if m.get("options"): return [(o, ("choice", i)) for i, o in enumerate(m["options"][: (2 if det else 3)])] + det
-        if m.get("action_id"): return [("撤销", ("undo", m["action_id"])), ("好", ("ok", None))] + det
+        if m.get("action_id"): return [(t("undo"), ("undo", m["action_id"])), (t("ok"), ("ok", None))] + det
         if det: return det
         return []
 

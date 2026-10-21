@@ -12,6 +12,7 @@ import argparse, base64, json, os, re, time, urllib.request
 from datetime import datetime
 from pathlib import Path
 
+from ..i18n import language_directive, t
 from .perceive import DIR
 from .provider import load_provider
 from .understand import latest_frame
@@ -31,7 +32,35 @@ DISMISS_S = 1800
 # outcome_report.bucket_of 的 offer_with_options 归档、以及以后的正负样本统计才有依据。
 # 刻意写死在这里而不是让模型生成：选项是安全契约的一部分，不能由模型临场改口径；
 # 模型只负责「要不要开口、说哪句话」（COMPANION_SPEC）。
-OFFER_OPTIONS = ["好的", "不用"]
+class _OfferOptions:
+    """Accept / decline labels for the current UI language. Index 0 is consent."""
+
+    def __iter__(self):
+        yield t("accept")
+        yield t("decline")
+
+    def __len__(self) -> int:
+        return 2
+
+    def __getitem__(self, index):
+        return (t("accept"), t("decline"))[index]
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, _OfferOptions):
+            return True
+        if isinstance(other, (list, tuple)):
+            return list(self) == list(other)
+        return False
+
+    def __repr__(self) -> str:
+        return repr(list(self))
+
+
+def offer_options() -> list[str]:
+    return [t("accept"), t("decline")]
+
+
+OFFER_OPTIONS = _OfferOptions()
 RECENT_N = 12
 CALL_TIMEOUT_S = 120
 
@@ -69,7 +98,7 @@ def ask(rows: list[dict], frame: Path | None) -> dict | None:
     if frame:
         b64 = base64.b64encode(frame.read_bytes()).decode()
         content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}})
-    content.append({"type": "text", "text": PROMPT.format(recent=_recent_text(rows))})
+    content.append({"type": "text", "text": PROMPT.format(recent=_recent_text(rows)) + "\n" + language_directive()})
     body = {"model": p.model, "max_tokens": 1024, "messages": [{"role": "user", "content": content}]}
     req = urllib.request.Request(p.base_url + "/v1/messages", data=json.dumps(body).encode(),
                                  headers={"x-api-key": p.api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"})

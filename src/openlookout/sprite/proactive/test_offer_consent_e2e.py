@@ -26,6 +26,7 @@ _HOME = Path(tempfile.mkdtemp(prefix="ol_offer_consent_"))
 os.environ["SPRITE_HOME"] = str(_HOME)
 
 from sprite.gui import SpriteWindow as _SpriteWindow          # noqa: E402
+from sprite.i18n import t                                      # noqa: E402
 from sprite.proactive import conversation                     # noqa: E402
 from sprite.proactive import help as helpmod                  # noqa: E402
 from sprite.proactive import live                             # noqa: E402
@@ -173,15 +174,15 @@ def test_offer_bubble_shows_options_and_click_accept_executes(monkeypatch):
     win = _drive(script, monkeypatch, executed)
 
     # 气泡确实摆出了两个可点的选择
-    assert seen["buttons"] == [("好的", ("choice", 0)), ("不用", ("choice", 1))], seen
+    assert seen["buttons"] == [(offer["options"][0], ("choice", 0)), (offer["options"][1], ("choice", 1))], seen
     assert "C 盘" in seen["text"]
 
     # 账本 1：outcomes.jsonl 里真的出现 accepted（本项目史上第一次）
     outcomes = _rows("outcomes.jsonl")
     assert [r["outcome"] for r in outcomes] == ["accepted"], outcomes
     row = outcomes[0]
-    assert row["options"] == ["好的", "不用"], row
-    assert row["choice_index"] == 0 and row["choice"] == "好的", row
+    assert row["options"] == offer["options"], row
+    assert row["choice_index"] == 0 and row["choice"] == offer["options"][0], row
     assert row["kind"] == "offer" and row["topic"] == "C盘", row
     assert row["latency_s"] is not None
 
@@ -196,13 +197,13 @@ def test_offer_bubble_shows_options_and_click_accept_executes(monkeypatch):
 
     # 点完之后气泡换成了「我开始处理…」，没有把 offer 气泡留在屏幕上
     assert win.msg is not None
-    assert "开始处理" in win.msg["text"] or win.msg.get("kind") == "action", win.msg
+    assert win.msg["text"] == t("starting", label="C盘") or win.msg.get("kind") == "action", win.msg
 
 
 def test_clicking_reject_records_rejected_and_never_executes(monkeypatch):
     """点「不用」：rejected 落账，而且一个动作都不许发生。"""
     _reset()
-    _publish()
+    offer = _publish()
     executed: list[dict] = []
 
     def script(win, pump):
@@ -213,7 +214,7 @@ def test_clicking_reject_records_rejected_and_never_executes(monkeypatch):
 
     outcomes = _rows("outcomes.jsonl")
     assert [r["outcome"] for r in outcomes] == ["rejected"], outcomes
-    assert outcomes[0]["choice_index"] == 1 and outcomes[0]["choice"] == "不用"
+    assert outcomes[0]["choice_index"] == 1 and outcomes[0]["choice"] == offer["options"][1]
 
     # 关键：没有执行，也没有 started 行
     assert executed == [], "用户拒绝了却仍然执行了"
