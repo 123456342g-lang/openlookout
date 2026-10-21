@@ -51,6 +51,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from sprite.config import sprite_home
+
 # ── 口径：本模块自持的词表（不从 timing 导入，避免与并行改动耦合）────────────
 # 新增/未知标签不会被丢：落在 unknown 类里，单独列出。
 #
@@ -152,7 +154,7 @@ def default_perceive_dir() -> Path:
     home = os.environ.get("SPRITE_HOME")
     if home:
         return Path(home) / "perceive"
-    return Path(r"E:\OpenLookout\sprite_home") / "perceive"
+    return sprite_home() / "perceive"
 
 
 # ── 读取（只读、优雅降级）────────────────────────────────────────────────────

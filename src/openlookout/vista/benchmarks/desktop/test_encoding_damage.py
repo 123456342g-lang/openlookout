@@ -90,12 +90,14 @@ def test_min_gap_stays_short_enough_to_look_reactive():
 
 
 def test_active_model_is_read_from_the_environment():
-    """A hard-coding an alias made the endpoint 400.  The host-native backend
-    publishes deepseek-v4.1-flash, and the model must stay overridable."""
-    assert brain.ACTIVE_MODEL
-    assert any("OPENLOOKOUT_MODEL" in line
-               for line in _module_source().splitlines()), \
-        "ACTIVE_MODEL must stay overridable via OPENLOOKOUT_MODEL"
+    """The model id comes from provider.json. OPENLOOKOUT_MODEL may override it.
+    An unset override is an empty string, not a personal model name."""
+    import os
+    source = _module_source()
+    assert "OPENLOOKOUT_MODEL" in source
+    assert "deepseek-v4.1-flash" not in source
+    assert "mimo-v2.6-flash" not in source
+    assert brain.ACTIVE_MODEL == str(os.environ.get("OPENLOOKOUT_MODEL") or "")
 
 
 def test_turn_timeout_is_companion_length_not_research_length():

@@ -8,11 +8,12 @@
 python -m sprite.proactive.help [--once]
 """
 from __future__ import annotations
-import argparse, base64, json, os, re, time, urllib.request
+import argparse, base64, json, os, re, time
 from datetime import datetime
 from pathlib import Path
 
 from ..i18n import language_directive, t
+from .chat import complete
 from .perceive import DIR
 from .provider import load_provider
 from .understand import latest_frame
@@ -100,10 +101,11 @@ def ask(rows: list[dict], frame: Path | None) -> dict | None:
         content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}})
     content.append({"type": "text", "text": PROMPT.format(recent=_recent_text(rows)) + "\n" + language_directive()})
     body = {"model": p.model, "max_tokens": 1024, "messages": [{"role": "user", "content": content}]}
-    req = urllib.request.Request(p.base_url + "/v1/messages", data=json.dumps(body).encode(),
-                                 headers={"x-api-key": p.api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=CALL_TIMEOUT_S) as r:
-        data = json.loads(r.read().decode())
+    data = complete(
+        {"model": p.model, "base_url": p.base_url, "api_key": p.api_key, "protocol": p.protocol},
+        body,
+        timeout=CALL_TIMEOUT_S,
+    )
     text = "".join(c.get("text", "") for c in data.get("content", []) if c.get("type") == "text")
     for m in reversed(list(re.finditer(r"\{.*\}", text, re.S))):
         try:

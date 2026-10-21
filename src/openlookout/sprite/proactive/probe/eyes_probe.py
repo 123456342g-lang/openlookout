@@ -3,7 +3,9 @@
 from __future__ import annotations
 import base64, glob, json, os, sys
 
-FRAMES = r"E:\OpenLookout\sprite_home\perceive\frames"
+from sprite.config import sprite_home
+
+FRAMES = str(sprite_home() / "perceive" / "frames")
 TOOLS = [{"name": "observe", "description": "返回用户电脑当前屏幕的最新截图（图片）。",
           "inputSchema": {"type": "object", "properties": {}}}]
 

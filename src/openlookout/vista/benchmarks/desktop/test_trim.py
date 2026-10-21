@@ -29,6 +29,7 @@ def _victim() -> subprocess.Popen:
 
 
 # ---------------------------------------------------------------- 真效果
+@pytest.mark.skipif(sys.platform != "win32", reason="needs Windows kernel32")
 def test_trim_frees_memory_for_real(monkeypatch):
     """真跑：起一个吃内存的进程，trim 之后可用内存应该上升。
 
@@ -103,6 +104,7 @@ def test_trim_refuses_dead_pid():
 
 
 # ---------------------------------------------------------------- 失败不许谎报
+@pytest.mark.skipif(sys.platform != "win32", reason="needs Windows kernel32")
 def test_failure_never_claims_success(monkeypatch):
     """OpenProcess 失败时必须如实说没改动，不能返回成功。"""
     import ctypes

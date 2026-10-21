@@ -7,9 +7,21 @@ from __future__ import annotations
 import argparse, json, os, time, urllib.request, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-UPSTREAM = "https://token-plan-cn.xiaomimimo.com/v1/chat/completions"
-MODEL = "mimo-v2.6-flash"
 MAX_TOKENS = 2048
+
+
+def upstream_url() -> str:
+    url = (os.environ.get("MIMO_UPSTREAM") or os.environ.get("OPENLOOKOUT_UPSTREAM") or "").strip()
+    if not url:
+        raise RuntimeError("MIMO_UPSTREAM is not set. This optional proxy has no built-in endpoint.")
+    return url
+
+
+def upstream_model(requested: str | None = None) -> str:
+    chosen = (requested or os.environ.get("MIMO_MODEL") or os.environ.get("OPENLOOKOUT_MODEL") or "").strip()
+    if not chosen:
+        raise RuntimeError("MIMO_MODEL or OPENLOOKOUT_MODEL is not set.")
+    return chosen
 
 
 def _content_parts(content) -> list[dict] | str:
@@ -55,10 +67,10 @@ def to_chat_tools(body: dict) -> list[dict]:
 
 def call_upstream(body: dict) -> dict:
     key = os.environ["MIMO_API_KEY"]
-    payload = {"model": MODEL, "messages": to_chat_messages(body), "max_tokens": MAX_TOKENS}
+    payload = {"model": upstream_model(body.get("model")), "messages": to_chat_messages(body), "max_tokens": MAX_TOKENS}
     tools = to_chat_tools(body)
     if tools: payload["tools"] = tools
-    req = urllib.request.Request(UPSTREAM, data=json.dumps(payload, ensure_ascii=False).encode(),
+    req = urllib.request.Request(upstream_url(), data=json.dumps(payload, ensure_ascii=False).encode(),
                                  headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=180) as r: return json.loads(r.read().decode())
 
@@ -72,7 +84,7 @@ def build_stream(body: dict, data: dict) -> bytes:
     choice = data["choices"][0]["message"]
     usage = data.get("usage", {})
     rid = f"resp_{uuid.uuid4().hex}"
-    base = {"id": rid, "object": "response", "model": body.get("model", MODEL), "created_at": int(time.time())}
+    base = {"id": rid, "object": "response", "model": upstream_model(body.get("model")), "created_at": int(time.time())}
     events, output = [], []
     for call in choice.get("tool_calls") or []:
         item = {"id": f"fc_{uuid.uuid4().hex}", "type": "function_call", "status": "completed", "call_id": call["id"],

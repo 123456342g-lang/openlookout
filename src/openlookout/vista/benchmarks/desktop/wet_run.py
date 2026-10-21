@@ -15,10 +15,13 @@ import json
 import os
 import re
 import time
-import urllib.request
 from pathlib import Path
 
-HOME = Path(os.environ.get("SPRITE_HOME", r"E:\OpenLookout\sprite_home"))
+from sprite.config import sprite_home
+from sprite.proactive.chat import complete
+from sprite.proactive.provider import load_provider
+
+HOME = sprite_home()
 # .env 在仓库根：src/openlookout/vista/benchmarks/desktop/ 上溯5 层
 ENV = Path(__file__).resolve().parents[5] / ".env"
 
@@ -36,7 +39,6 @@ def ask(prompt: str, image_b64: str | None, *, max_tokens: int = 400) -> str:
     实测坑：这个模型会先输出一段 thinking 再给正文，thinking 也吃 max_tokens；
     偶尔会把预算吃光导致正文为空。所以：留够预算，并且空结果会重试一次。
     """
-    from sprite.proactive.provider import load_provider
     p = load_provider()
     for attempt in (max_tokens, max_tokens * 4):
         content = []
@@ -45,11 +47,11 @@ def ask(prompt: str, image_b64: str | None, *, max_tokens: int = 400) -> str:
         content.append({"type": "text", "text": prompt})
         body = {"model": p.model, "max_tokens": attempt,
                 "messages": [{"role": "user", "content": content}]}
-        req = urllib.request.Request(p.base_url + "/v1/messages", data=json.dumps(body).encode(),
-                                     headers={"x-api-key": api_key(), "anthropic-version": "2023-06-01",
-                                              "Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=180) as r:
-            d = json.loads(r.read().decode())
+        d = complete(
+            {"model": p.model, "base_url": p.base_url, "api_key": p.api_key, "protocol": p.protocol},
+            body,
+            timeout=180,
+        )
         # thinking 块有时与正文重复，只取 text 块，thinking 仅在正文为空时兜底
         texts = [c.get("text") or "" for c in d.get("content", []) if c.get("type") == "text"]
         out = "".join(t for t in texts if t).strip()

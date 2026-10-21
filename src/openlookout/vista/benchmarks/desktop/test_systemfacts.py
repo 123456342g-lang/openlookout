@@ -7,8 +7,11 @@ from __future__ import annotations
 
 import json
 import shutil
+import sys
 import tempfile
 from pathlib import Path
+
+import pytest
 
 from vista.benchmarks.desktop.systemfacts import (
     DEFAULTS, SystemWatcher, disk_facts, heavy_procs, load, mem_facts, save, state_path,
@@ -28,6 +31,7 @@ def _fake(disk=None, mem=None, procs=None):
 
 
 # ---------------------------------------------------------------- 真值回归：数字必须是真的
+@pytest.mark.skipif(sys.platform != "win32", reason="needs a Windows C: drive")
 def test_disk_reading_matches_shutil():
     """报的 C 盘读数必须和 shutil 自己读的一致——不允许四舍五入到离谱。"""
     f = disk_facts("C:/")

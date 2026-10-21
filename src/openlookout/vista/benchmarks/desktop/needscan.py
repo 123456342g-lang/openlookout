@@ -20,9 +20,10 @@ import zipfile
 from collections import defaultdict
 from pathlib import Path
 
-DEFAULT_EVENTS = Path(r"E:\OpenLookout\data\events.jsonl")
-DEFAULT_EVENTS_SET = (DEFAULT_EVENTS,
-                      Path(r"E:\OpenLookout\data\backfill\events.jsonl"))
+from sprite.config import sprite_home
+
+DEFAULT_EVENTS = sprite_home() / "events.jsonl"
+DEFAULT_EVENTS_SET = (DEFAULT_EVENTS, sprite_home() / "backfill" / "events.jsonl")
 
 # R7 作业/实验用的词表。中英分开，避免「lab」误命中「label」之类。
 HOMEWORK_WORDS = ("实验", "作业", "课程", "考勤", "实习", "大作业", "期末", "论文", "小组",

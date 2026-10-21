@@ -13,14 +13,19 @@ from pathlib import Path
 
 import certifi
 
+from sprite.config import sprite_home
 from sprite.i18n import LiveText
+from sprite.proactive.chat import build_request, normalize_response, strip_images
+from sprite.proactive.control import paused, quit_requested
+from sprite.proactive.first_run import provider_problem
+from sprite.proactive.provider import bootstrap_dotenv, load_provider
 
 from . import coach, desktopfacts, memory, systemfacts, watching
 from .decision_engine import DecisionEngine
 from .agenda import Agenda
 from .stale_guard import action_key, note_stale_block, note_stale_success
 
-HOME = Path(os.environ.get("SPRITE_HOME", r"E:\OpenLookout\sprite_home"))
+HOME = sprite_home()
 COMPANION = HOME / "companion"
 GUIDE = COMPANION / "GUIDE.md"
 WORKING = COMPANION / "WORKING.md"
@@ -89,9 +94,19 @@ TURN_TIMEOUT_S = int(os.environ.get("OPENLOOKOUT_TURN_TIMEOUT_S") or 300)
 # cutting off rather than waiting out.
 DECISION_LEASE_S = int(os.environ.get("OPENLOOKOUT_DECISION_LEASE_S")
                        or TURN_TIMEOUT_S)
-# Use the configured provider model.  Hard-coding an alias here made Claude
-# return a 400 when the endpoint did not publish that model id.
-ACTIVE_MODEL = str(os.environ.get("OPENLOOKOUT_MODEL") or "deepseek-v4.1-flash")
+# Optional override. The model id itself comes from provider.json at build time.
+# Empty means "use the provider file"; do not substitute a personal model name.
+ACTIVE_MODEL = str(os.environ.get("OPENLOOKOUT_MODEL") or "")
+# How many HTTP calls one turn may make. The old loop did 13, each carrying
+# the full screenshot. 4 is the cap unless OPENLOOKOUT_MAX_CALLS says otherwise.
+def model_call_budget(env=None) -> int:
+    env = os.environ if env is None else env
+    raw = str(env.get("OPENLOOKOUT_MAX_CALLS") or "4").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 4
+    return max(1, min(value, 8))
 
 
 def thumb(visual) -> list[int]:
@@ -225,8 +240,11 @@ def ops_events(*, refresh_s: float = 5.0, now: float | None = None) -> list[dict
 
 
 def timing_tracker():
-    """惰创建时机追踪器；导入失败化成 None（大脑照常跑，只是回到旧的心跳触发）?
-    timing v2：时效按「我们第丢次看见这条事件的时刻算，而不是它自称发生的时刻?    记录器把 focus 区间写在结束时却用开始时刻做 ts，不这样改，丢个刚刚才可行动的边界会被算成过期?    """
+    """惰性创建时机追踪器；导入失败就化成 None（大脑照常跑，只是回到旧的心跳触发）。
+
+    timing v2：时效按「我们第一次看见这条事件的时刻」算，而不是它自称发生的时刻。
+    记录器把 focus 区间写在结束时却用开始时刻做 ts，不这样改，一个刚刚才可行动的边界会被算成过期。
+    """
     global TIMING_TRACKER
     if TIMING_TRACKER is None:
         try:
@@ -239,8 +257,12 @@ def timing_tracker():
 
 
 def residual_fact(*, window_min: float = 90.0, refresh_s: float = 5.0, now: float | None = None) -> str:
-    """【此刻的异常?s_t】：本地可复算的注意力信号，只看本机行为流水，不读屏、不调用模型?
-    s_t = -log2 P(应用_t | 应用_(t-1)) - log2 P(类型_t)，一阶马尔可?+ 0.5 平滑?    预期模型由同丢段流水现场学出，扢?P 有版本可复算，不是模型在线自由裁量?    s_t ?= 本机平时不这样；s_t ?= 丢切照常这是注意力信号，不替模型决定开不开口?    """
+    """【此刻的异常，s_t】：本地可复算的注意力信号，只看本机行为流水，不读屏、不调用模型。
+
+    s_t = -log2 P(应用_t | 应用_(t-1)) - log2 P(类型_t)，一阶马尔可夫 + 0.5 平滑。
+    预期模型由同一段流水现场学出，所以 P 有版本可复算，不是模型在线自由裁量。
+    s_t 高：本机平时不这样；s_t 低：一切照常。这是注意力信号，不替模型决定开不开口。
+    """
     now = now or time.time()
     if now - RESIDUAL_CACHE["at"] < refresh_s and RESIDUAL_CACHE["text"]:
         return RESIDUAL_CACHE["text"]
@@ -318,8 +340,7 @@ def residual_fact(*, window_min: float = 90.0, refresh_s: float = 5.0, now: floa
     return text
 
 
-HISTORY_LOG = Path(os.environ.get("OPENLOOKOUT_EVENTS")
-                   or r"E:\OpenLookout\data\events.jsonl")
+HISTORY_LOG = Path(os.environ.get("OPENLOOKOUT_EVENTS") or (HOME / "events.jsonl"))
 LONG_TERM_CACHE: dict = {"at": 0.0, "text": ""}
 
 _NOISE_SEG = ("wxwork", "tencent files", "code cache", "service worker", "cachestorage",
@@ -336,7 +357,10 @@ _DOC_EXT = {".md", ".txt", ".doc", ".docx", ".pdf", ".xls", ".xlsx", ".csv", ".p
 
 
 def _is_user_file(path: str) -> bool:
-    """排除应用内部缓存/日志（WXWork / CEF cache、leveldb、kv.db-wal 之类）?    这些是「文件事件」里最大的假阳性来源，混进来会把应用自己的写入当成用户的工作。"""
+    """排除应用内部缓存/日志（WXWork / CEF cache、leveldb、kv.db-wal 之类）。
+
+    这些是「文件事件」里最大的假阳性来源，混进来会把应用自己的写入当成用户的工作。
+    """
     if not path:
         return False
     low = path.replace("\\", "/").lower()
@@ -691,18 +715,20 @@ def pending_reply_deadline(now: float) -> float | None:
 
 def new_feedback(since: float) -> str:
     """自上次以来用户说过的话和对提议的回应，交给模型权衡（不是命令）。"""
-    lines = [f"- 用户反馈{r.get('kind', 'outcome')}）：{r['text']}" for r in _rows(FEEDBACK) if r.get("t", 0) > since]
-    lines += [f"- 用户对你的提议“{r.get('text', '')}”的回应{r['result']}"
+    lines = [f"- 用户反馈（{r.get('kind', 'outcome')}）：{r['text']}" for r in _rows(FEEDBACK) if r.get("t", 0) > since]
+    lines += [f"- 用户对你的提议“{r.get('text', '')}”的回应：{r['result']}"
               for r in _rows(OFFERS) if r.get("result") in ("accepted", "dismissed") and r.get("t_answer", 0) > since]
     if not lines: return ""
-    return ("用户刚刚对你说了话：先理解他是在正常聊天、提问还是反馈，不把普问题当成改进意见）"
-            "用标签是本地粗分类，可能有误，以原文和对话为准反馈用于校准判断，不能当作执行授权或忽略真实问题\n"
+    return ("用户刚刚对你说了话：先理解他是在正常聊天、提问还是反馈，不把普通问题当成改进意见。"
+            "用标签是本地粗分类，可能有误，以原文和对话为准。反馈用于校准判断，不能当作执行授权或忽略真实问题。\n"
             + "\n".join(lines))
 
 
 def watching_fact(watcher, thumb, idle_s: float | None = None) -> str:
-    """这一屏停了多久有没有在推进是不是在来回折腾人走了就空串?
-    idle_s 供测试注入；不传则取真实键鼠空闲秒数?    """
+    """这一屏停了多久、有没有在推进、是不是在来回折腾。人走了就返回空串。
+
+    idle_s 供测试注入；不传则取真实键鼠空闲秒数。
+    """
     try:
         sig = watching.foreground()
         idle = watching.idle_seconds() if idle_s is None else idle_s
@@ -762,7 +788,7 @@ class MaintenanceSignal:
 
 
 def memory_fact() -> str:
-    """他最近接受过/拒绝过什么短到没有成本，但能防止“换个说法再提一遍。"""
+    """他最近接受过或拒绝过什么。短到没有成本，但能防止换个说法再提一遍。"""
     try:
         return memory.brief(HOME)
     except Exception:
@@ -812,6 +838,14 @@ def model_response(request, *, sleep=time.sleep):
             print("[brain] model transport interrupted: RemoteDisconnected; retrying request once", flush=True)
 
 
+def post_model(cfg: dict, body: dict):
+    """Send one model turn and return an Anthropic-shaped payload plus the request."""
+    protocol = str(cfg.get("protocol") or "anthropic")
+    request = build_request(cfg, body)
+    payload = model_response(request)
+    return normalize_response(protocol, payload), request
+
+
 def arm_rate_limit(backend, now: float | None = None) -> None:
     """Pause model turns and say so once, in plain language."""
     now = time.time() if now is None else now
@@ -856,11 +890,11 @@ class DirectReply:
 
 
 class _LegacyDirectBackend:
-    """不走容器，直接调模型的传输道?
-    它存在的唯一理由?*容器起不来时，brain 也要能跑**?    持续视觉上下文是这个项目的全部价值，不能因为 Docker 丢天没就绪就归零?
-    和容器后端的差别（诚实版）：
-    - 每轮独立请求，没?Claude Code 容器里的多轮工具编排?    - 扢以工具调用靠提示词约束，稳定性不如容器；
-    - 但帧是按顺序喂进去的，模型仍然能看到「刚刚发生了仢么?    """
+    """不走容器，直接调模型的传输。
+
+    每轮是一次独立请求，按 provider.json 的协议走 Anthropic messages 或 OpenAI
+    chat/completions。帧按顺序喂进去，模型仍然能看到刚刚发生了什么。
+    """
 
     def __init__(self, cfg: dict):
         self.cfg = cfg
@@ -871,23 +905,14 @@ class _LegacyDirectBackend:
         self.session = session
 
     def run(self, task_input) -> DirectReply:
-        import json as _json
-        import urllib.request
-        from .profiles import make_profile
         prompt = _extract_text(task_input)
         if not prompt:
             return DirectReply("")
         msgs = self.history[-8:] + [{"role": "user", "content": prompt}]
         body = {"model": self.cfg["model"], "max_tokens": 2048, "messages": msgs}
-        req = urllib.request.Request(
-            self.cfg["base_url"] + "/v1/messages", data=_json.dumps(body).encode(),
-            headers={"x-api-key": self.cfg["api_key"],
-                     "Authorization": "Bearer " + self.cfg["api_key"],
-                     "anthropic-version": "2023-06-01",
-                     "Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(req, timeout=180) as r:
-                d = _json.loads(r.read().decode())
+            req = build_request(self.cfg, body)
+            d = normalize_response(self.cfg.get("protocol") or "anthropic", model_response(req))
         except Exception as e:
             print(f"[brain] 模型调用失败：{type(e).__name__}", flush=True)
             return DirectReply("")
@@ -898,7 +923,7 @@ class _LegacyDirectBackend:
 
 
 def _extract_text(task_input) -> str:
-    """?VISTA 准备好的输入里取出本轮的公开文字（拿不到就返回空）。"""
+    """从 VISTA 准备好的输入里取出本轮的公开文字（拿不到就返回空）。"""
     for attr in ("public_text", "text", "prompt"):
         v = getattr(task_input, attr, None)
         if isinstance(v, str) and v.strip():
@@ -940,12 +965,14 @@ class LocalClaudeTextBackend:
                    "call companion exactly once at the end. Claude Code native Bash/Read/etc are also available "
                    "on the host. This turn includes actual screen image blocks; inspect them directly.")
         env = os.environ.copy()
-        env["ANTHROPIC_DEFAULT_OPUS_MODEL_NAME"] = "deepseek-v4.1-flash"
-        env["ANTHROPIC_DEFAULT_SONNET_MODEL_NAME"] = "deepseek-v4.1-flash"
-        env["ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME"] = "deepseek-v4.1-flash"
-        cmd = [self.binary, "-p", "--model", "opus", "--output-format", "stream-json",
+        model = str(self.cfg.get("model") or os.environ.get("OPENLOOKOUT_MODEL") or "").strip()
+        if model:
+            env["ANTHROPIC_MODEL"] = model
+        cmd = [self.binary, "-p", "--output-format", "stream-json",
                "--input-format", "stream-json",
                "--setting-sources", "user", "--no-chrome"]
+        if model:
+            cmd[2:2] = ["--model", model]
         try:
             if self._tool_server is None:
                 from .local_tool import LocalToolServer
@@ -985,7 +1012,7 @@ class LocalClaudeTextBackend:
 
 
 class VisualDirectBackend:
-    """Anthropic-compatible fallback that keeps VISTA visuals and tools alive."""
+    """Direct HTTP backend. Speaks provider.json's anthropic or openai protocol."""
 
     def __init__(self, cfg: dict, runtime=None):
         self.cfg = cfg
@@ -993,7 +1020,7 @@ class VisualDirectBackend:
         # This backend is an explicit compatibility path, never a sandbox.
         # Keep the marker available to logs/tests/UI so a transport failure
         # cannot be mistaken for the Docker Claude backend.
-        self.mode = "direct-fallback"
+        self.mode = "direct"
         self.session = None
         self.history: list[dict] = []
         self.turn_starts: list[int] = []
@@ -1003,7 +1030,7 @@ class VisualDirectBackend:
         self.screen_revision = 0
         self.screen_sample = None
         self.feedback_since = time.time()
-        self.max_segments = 12
+        self.max_segments = max(0, model_call_budget() - 1)
         self.max_readonly_segments = 3
         # True = 本轮不送新截图（无图心跳/维护轮）：_messages 把历史图像也
         # 全部占位，防止「新图省了、上一轮那张图还在」继续花图像 token。
@@ -1172,8 +1199,8 @@ class VisualDirectBackend:
                               "local_reads": local_reads}, ensure_ascii=False)
                 + "\n目录关键词匹配不等于查过操作历史；未读取的来源仍未知。翻页未结束或来源失败不能当作已覆盖。"
                 "history_pages_read 只计模型工具读取，环境提供的真实小页另列于上下文；零次工具读取不代表小页没提供。"
-                "结合当前目标与这些真实覆盖，比较继续同一调查和了解其他未知线索的价；"
-                "若择继续，说明尚缺的证据会改变什么判断，不凭笔记锁定任务。")
+                "结合当前目标与这些真实覆盖，比较继续同一调查和了解其他未知线索的价值；"
+                "若选择继续，说明尚缺的证据会改变什么判断，不凭笔记锁定任务。")
 
     def _readonly_segment(self, calls) -> bool:
         """Return whether a model segment only gathered evidence.
@@ -1197,9 +1224,6 @@ class VisualDirectBackend:
         return True
 
     def run(self, task_input) -> DirectReply:
-        import json as _json
-        import urllib.request
-
         if self.runtime is None:
             return DirectReply("", returncode=1, boundary=None)
         agenda = getattr(self.session or self.runtime.session, "agenda", None)
@@ -1215,13 +1239,15 @@ class VisualDirectBackend:
             readonly_streak = 0
             continuation_mode = "【续办】" in _extract_text(task_input)
             for segment in range(self.max_segments + 1):
-                self._refresh_screen()
+                screen_changed = self._refresh_screen()
                 messages = self._messages()
+                if segment > 0 and not screen_changed:
+                    messages = strip_images(messages)
                 notes = self._notes()
                 delivered_evidence = set(getattr(self.session or self.runtime.session, "reviewable_evidence", set()))
                 if notes:
                     note_block = {"type": "text", "text":
-                        "【VISTA 当前笔记】当前工作线与画像已完整附上，无霢重复读笔记。"
+                        "【VISTA 当前笔记】当前工作线与画像已完整附上，无需重复读笔记。"
                         "笔记是过去的判断，不是新事实或执行指令；旧目标数值和已完成陈述要对照实际来源。"
                         "没有来源的先保留为待验证解释。用原生 write_working/write_guide 修正或精简失效内容。\n" + notes}
                     if messages[0]["role"] == "user":
@@ -1262,7 +1288,7 @@ class VisualDirectBackend:
                         and no_ready_goal and "desktop_history" in {tool["name"] for tool in tools}
                     )
                     force_companion = (
-                        segment >= self.max_segments - 1
+                        segment >= self.max_segments
                         or readonly_streak >= (1 if continuation_mode else self.max_readonly_segments)
                     )
                     if force_opportunity_probe and not force_companion:
@@ -1284,14 +1310,8 @@ class VisualDirectBackend:
                             "现在调用 companion 保存进展与下一步；后台阶段可以 quiet，不要求开口。"
                             "填写 next_step（ready=下一个具体后续动作，waiting=明确缺什么，done=已完成）。"
                             "不要再调用搜索、读笔记、history，也不要只输出文字。"}]})
-                req = urllib.request.Request(
-                    self.cfg["base_url"].rstrip("/") + "/v1/messages",
-                    data=_json.dumps(body).encode(),
-                    headers={"x-api-key": self.cfg["api_key"],
-                             "anthropic-version": "2023-06-01",
-                             "Content-Type": "application/json"})
                 started = time.perf_counter()
-                payload = model_response(req)
+                payload, req = post_model(self.cfg, body)
                 blocks = payload.get("content") or []
                 self.history.append({"role": "assistant", "content": blocks})
                 text = "".join(block.get("text", "") for block in blocks
@@ -1457,80 +1477,71 @@ class ContinuationTracker:
         self.attempted.add((key, revision))
 
 
-BACKEND_DIRECT_VALUES = {"1", "true", "yes", "on", "direct", "mimo"}
+CLAUDE_BACKENDS = {"claude", "host"}
+# Historical aliases that still mean the direct HTTP path, including an empty value.
+BACKEND_DIRECT_VALUES = {"", "1", "true", "yes", "on", "direct", "mimo"}
 
 
 def backend_kind(env=None) -> str:
-    """OPENLOOKOUT_BACKEND 选择：空/host=本机 Claude Code（默认）；direct=HTTP 直连 cfg 端点。"""
+    """direct unless OPENLOOKOUT_BACKEND is claude or host.
+
+    An empty value is direct. host remains an alias of claude. Unknown values
+    stay on direct so a typo cannot start Claude Code.
+    """
     env = os.environ if env is None else env
-    return str(env.get("OPENLOOKOUT_BACKEND", "")).strip().lower()
+    raw = str(env.get("OPENLOOKOUT_BACKEND", "")).strip().lower()
+    if raw in CLAUDE_BACKENDS:
+        return "claude"
+    return "direct"
+
+
+def chosen_model(cfg: dict, env=None) -> str:
+    """provider.json model, unless OPENLOOKOUT_MODEL is a non-blank override."""
+    env = os.environ if env is None else env
+    override = str(env.get("OPENLOOKOUT_MODEL") or "").strip()
+    if override:
+        return override
+    return str((cfg or {}).get("model") or "").strip()
 
 
 def build(cfg: dict, root: Path):
-    """建立持续会话?
-    优先走官方的 Claude Code 容器（Vista 的标准传输道）容器不可用?    **降级为直连模?*：宁可换丢条道，也不能再出现建了会话就卡住」?    持续视觉上下文是这个项目的全部价值，卡住等于没有价?    """
+    """建立持续会话。
+
+    默认直接请求 provider.json 里的协议端点。只有 OPENLOOKOUT_BACKEND=claude
+    （host 是别名）才走本机 Claude Code。Claude 起不来就报错，不改走直连；
+    直连缺配置也不改走 Claude。
+    """
     from vista.benchmarks.desktop.profiles import make_experiment, make_profile
     from vista.benchmarks.desktop.session import DesktopSession
     from vista.core.runtime import TaskRuntime
     session = DesktopSession("你是陪在用户身边的小精灵：结合持续画面与真实操作痕迹理解目标，自主发现值得帮助的事情、准备下一步；看准时机交流或报告有用的结果。", {})
-    # Preserve the configured provider endpoint/credential, but select the
-    # requested model explicitly so both Claude Code and direct fallback use
-    # the same model id.  Do not rewrite provider configuration here.
-    # 模型统一为 deepseek-v4.1-flash：本机 claude 供应商里 opus 档的显示名
-    # （~/.claude/settings.json 的 ANTHROPIC_DEFAULT_OPUS_MODEL_NAME）。
-    # 传输层经 opus 别名档走本机供应商（别名档 = 换供应商只改本机配置）；
-    # direct 降级路径用同一个模型 id。OPENLOOKOUT_MODEL 可显式覆盖。
-    # provider 的 URL/key 永远保持 cfg 原样，此处只换模型 id。
-    host_model = str(os.environ.get("OPENLOOKOUT_MODEL") or "deepseek-v4.1-flash")
-    if backend_kind() in BACKEND_DIRECT_VALUES:
-        # 显式直连：模型直接用 provider.json 里配置的模型（如 mimo-v2.6-flash），
-        # 不套本机 claude 的 opus 别名档；OPENLOOKOUT_MODEL 仍可显式覆盖。
-        host_model = str(os.environ.get("OPENLOOKOUT_MODEL") or cfg.get("model") or "mimo-v2.6-flash")
-    selected_model = host_model
-    selected_cfg = {**cfg, "model": selected_model}
-    exp = make_experiment(make_profile(), backend="claude", model=host_model, effort="low", revision="0.1", presentation={})
+    model = chosen_model(cfg)
+    selected_cfg = {**cfg, "model": model, "protocol": (cfg or {}).get("protocol") or "anthropic"}
+    exp = make_experiment(make_profile(), backend="claude", model=model, effort="low", revision="0.1", presentation={})
     runtime = TaskRuntime(session, exp, artifact_dir=root / "artifacts")
-    try:
-        # 显式直连（issue #29）：本机 claude 供应/代理（如 cc-switch opus 档）
-        # 限流或不可用时，OPENLOOKOUT_BACKEND=direct 直接走 provider.json 的
-        # Anthropic 兼容端点，保留视觉与全部 VISTA 工具，不起 claude/Docker/MCP。
-        if backend_kind() in BACKEND_DIRECT_VALUES:
-            print("[brain] 显式直连模式（OPENLOOKOUT_BACKEND=direct）：HTTP 直连 provider 端点，不起本机 Claude Code", flush=True)
-            direct_backend = VisualDirectBackend(selected_cfg, runtime)
-            # 区分「主动选的直连」与「主通道挂了的降级」：日志/状态/测试据此识别，
-            # 两者都是非沙箱直连，运行时行为分支仍只看 isinstance。
-            direct_backend.mode = "direct-configured"
-            return session, runtime, direct_backend, "direct-configured"
-        # Explicit local mode: bypass Claude Code, Docker and MCP entirely.
-        # VisualDirectBackend talks to the configured Anthropic-compatible
-        # endpoint directly and preserves the companion tool protocol.
-        if os.environ.get("OPENLOOKOUT_NO_DOCKER_MCP", "").lower() in {"1", "true", "yes", "on"}:
-            print("[brain] host Claude Code mode: no Docker, no MCP", flush=True)
-            return session, runtime, LocalClaudeTextBackend(selected_cfg, runtime), "host-local-no-mcp"
-        import certifi
-        import shutil
-        from vista.backends.claude import create_backend
-        from vista.backends.claude.provider import LOCAL_HOST_PROVIDER
-        from vista.backends.claude.runner import default_claude_bin
-        # 先探丢次传输道是否真的可用：Windows 上要 docker run 才能探，
-        # 而这个探测只会在第一?run() 时才发生（太晚了）这里提前探?        # 探不通就直接降级，不让brain 卡在「会话已建立」然后不动?        # User-requested mode: invoke the native Claude Code installed on the
-        # Windows host.  Docker is intentionally not part of this path.
-        configured = os.environ.get("OPENLOOKOUT_CLAUDE_BIN") or shutil.which("claude")
-        binary = Path(configured) if configured else default_claude_bin()
-        # This is an explicit product mode, not an accidental fallback.
-        os.environ.setdefault("OPENLOOKOUT_ALLOW_UNSAFE_HOST_MODE", "1")
-        backend = create_backend(
-            runtime, directory=root / "transport", oauth_token=None,
-            binary=binary, image="arc3-claude-player:0.1",
-            provider=LOCAL_HOST_PROVIDER, provider_credential=None, provider_base_url=None,
-            max_output_tokens=2048, ca_bundle=Path(certifi.where()), host_mode=True,
-            task_timeout=TURN_TIMEOUT_S, decision_lease_timeout=DECISION_LEASE_S,
-            host_builtin_tools=os.environ.get("OPENLOOKOUT_CLAUDE_BUILTIN_TOOLS", ""))
-        print(f"[brain] Claude backend: host-native ({binary})", flush=True)
-        return session, runtime, backend, "host-native-unsandboxed"
-    except Exception as e:                       # 容器/镜像/传输起不来，不该让整?brain 死掉
-        print(f"[brain] Claude Docker 不可用（{type(e).__name__}: {str(e)[:80]}），显式降级?direct-fallback（无沙箱）", flush=True)
-        return session, runtime, VisualDirectBackend(selected_cfg, runtime), "direct-fallback"
+    if backend_kind() != "claude":
+        print("[brain] direct mode: HTTP to the configured provider, no Claude Code", flush=True)
+        direct_backend = VisualDirectBackend(selected_cfg, runtime)
+        direct_backend.mode = "direct-configured"
+        return session, runtime, direct_backend, "direct-configured"
+    if os.environ.get("OPENLOOKOUT_NO_DOCKER_MCP", "").lower() in {"1", "true", "yes", "on"}:
+        print("[brain] Claude Code mode without Docker or MCP", flush=True)
+        return session, runtime, LocalClaudeTextBackend(selected_cfg, runtime), "host-local-no-mcp"
+    from vista.backends.claude import create_backend
+    from vista.backends.claude.provider import LOCAL_HOST_PROVIDER
+    from vista.backends.claude.runner import default_claude_bin
+    configured = os.environ.get("OPENLOOKOUT_CLAUDE_BIN") or shutil.which("claude")
+    binary = Path(configured) if configured else default_claude_bin()
+    os.environ.setdefault("OPENLOOKOUT_ALLOW_UNSAFE_HOST_MODE", "1")
+    backend = create_backend(
+        runtime, directory=root / "transport", oauth_token=None,
+        binary=binary, image="arc3-claude-player:0.1",
+        provider=LOCAL_HOST_PROVIDER, provider_credential=None, provider_base_url=None,
+        max_output_tokens=2048, ca_bundle=Path(certifi.where()), host_mode=True,
+        task_timeout=TURN_TIMEOUT_S, decision_lease_timeout=DECISION_LEASE_S,
+        host_builtin_tools=os.environ.get("OPENLOOKOUT_CLAUDE_BUILTIN_TOOLS", ""))
+    print(f"[brain] Claude backend: host-native ({binary})", flush=True)
+    return session, runtime, backend, "host-native-unsandboxed"
 
 
 def restore_guide(runtime, ledger=None) -> None:
@@ -1691,10 +1702,13 @@ def reset_current() -> None:
 def run() -> None:
     from vista.benchmarks.desktop.session import screen_visual
     from vista.core.profiles import Phase
-    from sprite.proactive.provider import load_provider, bootstrap_dotenv
-    bootstrap_dotenv()  # .env 本地开关（OPENLOOKOUT_BACKEND 等）随本进程生效；真实环境变量优先
+    bootstrap_dotenv()  # .env 本地开关随本进程生效；真实环境变量优先
+    problem = provider_problem()
+    if problem:
+        print(problem, flush=True)
+        raise SystemExit(2)
     _p = load_provider()
-    cfg = {"model": _p.model, "base_url": _p.base_url, "api_key": _p.api_key}
+    cfg = {"model": _p.model, "base_url": _p.base_url, "api_key": _p.api_key, "protocol": _p.protocol}
     root = COMPANION / "runs" / time.strftime("%Y%m%d-%H%M%S")
     session, runtime, backend, mode = build(cfg, root)
     if hasattr(backend, "attach"):
@@ -1755,6 +1769,11 @@ def run() -> None:
     try:
         while not runtime.terminal:
             time.sleep(2)
+            if quit_requested(HOME):
+                print("[brain] quit requested; stopping", flush=True)
+                break
+            if paused(HOME):
+                continue
             now = time.time()
             if now < float(getattr(backend, "rate_limited_until", 0) or 0):
                 continue

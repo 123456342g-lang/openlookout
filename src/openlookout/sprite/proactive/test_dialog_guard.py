@@ -17,11 +17,11 @@ from __future__ import annotations
 
 import pytest
 
+tk = pytest.importorskip("tkinter")
+
 from sprite.i18n import t
 from sprite.proactive import live
 from sprite.proactive.dialog import ChatDialog
-
-tk = pytest.importorskip("tkinter")
 
 HISTORY = [{"role": "assistant", "text": "我已经把桌面整理好了", "time": "2026-10-12 09:30:00"}]
 
